@@ -9,3 +9,4 @@ aiofiles==24.1.0
 python-multipart==0.0.12
 python-dotenv==1.0.1
 lottie==0.7.2
+Pillow==10.4.0

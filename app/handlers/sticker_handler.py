@@ -3,13 +3,18 @@ import time
 import logging
 import asyncio
 import io
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config import settings
 from app.services.cache_manager import CacheManager
 from app.services.telegram_enhanced import TelegramAPIError
+from app.services.image_combiner import (
+    image_from_bytes,
+    combine_images,
+    image_to_webp
+)
 from app.utils.error_handler import handle_telegram_api_error, handle_timeout_error, handle_generic_error
 from app.utils.logging_helpers import log_performance
 from app.utils.response_builder import build_sticker_response_headers
@@ -96,4 +101,163 @@ class StickerHandler:
         except Exception as e:
             elapsed_time = int((time.time() - start_time) * 1000)
             raise handle_generic_error(e, file_id, elapsed_time)
+    
+    async def combine_stickers(
+        self,
+        file_ids: List[str],
+        tile_size: int = 128
+    ) -> StreamingResponse:
+        """
+        Combine multiple stickers into a single grid image.
+        
+        Args:
+            file_ids: List of Telegram file IDs to combine
+            tile_size: Size of each tile in pixels (default: 128)
+            
+        Returns:
+            StreamingResponse with combined WebP image
+            
+        Raises:
+            HTTPException: On errors (400, 404, 500, 504)
+        """
+        start_time = time.time()
+        
+        if not file_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="At least one file_id is required"
+            )
+        
+        try:
+            # Fetch all stickers in parallel
+            logger.info(f"Fetching {len(file_ids)} stickers for combination")
+            
+            fetch_tasks = [
+                self._fetch_sticker_safe(file_id)
+                for file_id in file_ids
+            ]
+            
+            results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+            
+            # Process results: extract successful image downloads
+            images = []
+            failed_count = 0
+            
+            for idx, result in enumerate(results):
+                file_id = file_ids[idx]
+                
+                if isinstance(result, Exception):
+                    logger.warning(
+                        f"Failed to fetch sticker {file_id}: {result}"
+                    )
+                    failed_count += 1
+                    continue
+                
+                if result is None:
+                    logger.warning(f"Sticker {file_id} not found")
+                    failed_count += 1
+                    continue
+                
+                content, mime_type, was_converted = result
+                
+                # Only process image files (skip TGS/Lottie JSON, WebM, etc.)
+                if not mime_type.startswith("image/"):
+                    logger.warning(
+                        f"Skipping {file_id}: not an image (mime_type: {mime_type})"
+                    )
+                    failed_count += 1
+                    continue
+                
+                try:
+                    # Convert bytes to PIL Image
+                    image = image_from_bytes(content)
+                    images.append(image)
+                    logger.debug(f"Successfully loaded image for {file_id}")
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to decode image for {file_id}: {e}"
+                    )
+                    failed_count += 1
+                    continue
+            
+            # Check if we got at least one image
+            if not images:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Failed to retrieve any images from {len(file_ids)} file_ids. "
+                           f"All files either not found, not images, or failed to decode."
+                )
+            
+            if failed_count > 0:
+                logger.info(
+                    f"Combining {len(images)} images (skipped {failed_count} failed files)"
+                )
+            
+            # Combine images into grid
+            try:
+                combined_image = combine_images(images, tile_size)
+                webp_bytes = image_to_webp(combined_image)
+            except Exception as e:
+                logger.error(f"Failed to combine images: {e}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to combine images: {str(e)}"
+                )
+            
+            processing_time = int((time.time() - start_time) * 1000)
+            
+            # Prepare response headers
+            headers = {
+                "X-Processing-Time-Ms": str(processing_time),
+                "X-Images-Combined": str(len(images)),
+                "X-Images-Failed": str(failed_count),
+                "X-Tile-Size": str(tile_size),
+                "Cache-Control": "no-cache"
+            }
+            
+            logger.info(
+                f"Successfully combined {len(images)} images in {processing_time}ms"
+            )
+            
+            return StreamingResponse(
+                io.BytesIO(webp_bytes),
+                media_type="image/webp",
+                headers=headers
+            )
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            elapsed_time = int((time.time() - start_time) * 1000)
+            logger.error(f"Error combining stickers: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Internal server error: {str(e)}"
+            )
+    
+    async def _fetch_sticker_safe(self, file_id: str) -> Optional[Tuple[bytes, str, bool]]:
+        """
+        Safely fetch a sticker, catching all exceptions.
+        
+        Args:
+            file_id: Telegram file ID
+            
+        Returns:
+            Tuple of (content, mime_type, was_converted) or None if failed
+        """
+        try:
+            result = await asyncio.wait_for(
+                self.cache_manager.get_sticker(file_id),
+                timeout=settings.endpoint_timeout_sec
+            )
+            return result
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout fetching sticker {file_id}")
+            return None
+        except TelegramAPIError as te:
+            logger.warning(f"Telegram API error for {file_id}: {te}")
+            return None
+        except Exception as e:
+            logger.warning(f"Error fetching sticker {file_id}: {e}")
+            return None
 
