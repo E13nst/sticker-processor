@@ -1,4 +1,4 @@
-.PHONY: help install install-dev test test-unit test-integration test-cov clean lint format run-dev run-prod
+.PHONY: help install install-dev test test-unit test-integration test-e2e test-cov clean lint format run-dev run-prod allure-serve allure-clean
 
 # Variables
 VENV = venv/bin
@@ -17,8 +17,13 @@ help:
 	@echo "  make test            Run all tests"
 	@echo "  make test-unit       Run only unit tests"
 	@echo "  make test-integration Run only integration tests"
+	@echo "  make test-e2e        Run only E2E tests"
 	@echo "  make test-cov        Run tests with coverage report"
 	@echo "  make test-watch      Run tests in watch mode"
+	@echo ""
+	@echo "Allure Reports:"
+	@echo "  make allure-serve    Start Allure report server"
+	@echo "  make allure-clean    Clean Allure results directory"
 	@echo ""
 	@echo "Code Quality:"
 	@echo "  make lint            Run linters (flake8, mypy)"
@@ -42,28 +47,54 @@ install-dev:
 
 # Testing
 test:
-	$(PYTEST) -v
+	$(PYTEST) -v --alluredir=allure-results
 
 test-unit:
-	$(PYTEST) -v -m unit
+	$(PYTEST) tests/unit/ -v --alluredir=allure-results
 
 test-integration:
-	$(PYTEST) -v -m integration
+	$(PYTEST) tests/integration/ -v --alluredir=allure-results
+
+test-e2e:
+	$(PYTEST) tests/e2e/ -v --alluredir=allure-results
 
 test-redis:
-	$(PYTEST) -v -m redis
+	$(PYTEST) -v -m redis --alluredir=allure-results
 
 test-cov:
-	$(PYTEST) --cov=app --cov-report=html --cov-report=term-missing
+	$(PYTEST) --cov=app --cov-report=html --cov-report=term-missing --alluredir=allure-results
 	@echo ""
 	@echo "Coverage report generated in htmlcov/index.html"
 	@echo "Open with: open htmlcov/index.html"
+	@echo ""
+	@echo "Allure results saved to allure-results/"
+	@echo "View with: make allure-serve"
 
 test-watch:
 	$(PYTEST) -f
 
 test-failed:
-	$(PYTEST) --lf -v
+	$(PYTEST) --lf -v --alluredir=allure-results
+
+# Allure Reports
+allure-serve:
+	@echo "Starting Allure report server..."
+	@if command -v allure >/dev/null 2>&1; then \
+		allure serve allure-results; \
+	else \
+		echo "Allure CLI not found. Install it first:"; \
+		echo "  macOS: brew install allure"; \
+		echo "  Linux: See https://docs.qameta.io/allure/#_installing_a_commandline"; \
+		echo ""; \
+		echo "Or use Docker:"; \
+		echo "  docker run -it --rm -p 5050:5050 -v \$$(pwd)/allure-results:/app/allure-results frankescobar/allure-docker-service"; \
+	fi
+
+allure-clean:
+	@echo "Cleaning Allure results directory..."
+	@rm -rf allure-results/* 2>/dev/null || true
+	@rm -rf allure-report 2>/dev/null || true
+	@echo "Allure results cleaned!"
 
 # Code Quality
 lint:
@@ -111,6 +142,8 @@ clean:
 	find . -type d -name ".mypy_cache" -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name "htmlcov" -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name ".coverage.*" -delete
+	find . -type d -name "allure-results" -exec rm -rf {} + 2>/dev/null || true
+	find . -type d -name "allure-report" -exec rm -rf {} + 2>/dev/null || true
 	@echo "Clean complete!"
 
 redis-local:
