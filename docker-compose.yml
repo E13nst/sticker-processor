@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+  sticker-processor:
+    build: .
+    ports:
+      - "8081:8081"
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DATABASE=1
+      - REDIS_MAX_CONNECTIONS=50
+      - REDIS_SOCKET_KEEPALIVE=true
+      - LOG_LEVEL=INFO
+      - WORKERS=4
+      - MAX_PROCESS_WORKERS=2
+      - HTTP_MAX_CONNECTIONS=100
+      - HTTP_MAX_CONNECTIONS_PER_HOST=30
+      - RATE_LIMIT_ENABLED=true
+      - RATE_LIMIT_REQUESTS=100
+      - RATE_LIMIT_WINDOW_SEC=60
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1000
+      --appendonly yes
+      --tcp-keepalive 60
+      --timeout 300
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 768M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  redis_data:
