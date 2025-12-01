@@ -200,10 +200,27 @@ class TelegramRequestQueue:
     
     async def shutdown(self):
         """Shutdown queue processor gracefully."""
+        if not self._running:
+            return
+        
         self._running = False
+        
         if self._processor_task:
-            await self.queue.put(None)  # Signal shutdown
             try:
+                # Signal shutdown by putting None in queue
+                await self.queue.put(None)
+            except Exception:
+                pass  # Queue might be closed or full
+            
+            try:
+                # Wait for processor to finish (with timeout)
                 await asyncio.wait_for(self._processor_task, timeout=5.0)
             except asyncio.TimeoutError:
+                # Force cancel if it doesn't finish in time
                 self._processor_task.cancel()
+                try:
+                    await self._processor_task
+                except asyncio.CancelledError:
+                    pass
+            except Exception:
+                pass  # Task might already be done

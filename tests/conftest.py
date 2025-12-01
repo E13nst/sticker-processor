@@ -179,27 +179,33 @@ def temp_cache_dir() -> Generator[Path, None, None]:
 
 
 @pytest.fixture
-def disk_cache_service(temp_cache_dir: Path) -> DiskCacheService:
+def disk_cache_service(temp_cache_dir: Path, monkeypatch) -> DiskCacheService:
     """Disk cache service instance with temporary directory."""
-    # Override cache directory for testing
-    original_dir = os.environ.get("DISK_CACHE_DIR")
-    os.environ["DISK_CACHE_DIR"] = str(temp_cache_dir)
+    # Override cache directory for testing using monkeypatch
+    from app.config import settings
+    original_dir = settings.disk_cache_dir
+    monkeypatch.setattr(settings, "disk_cache_dir", str(temp_cache_dir))
     
+    # Create new service instance with patched settings
     service = DiskCacheService()
+    
+    # Verify it uses the temp directory
+    assert service.cache_dir == temp_cache_dir
     
     yield service
     
-    # Restore original setting
-    if original_dir:
-        os.environ["DISK_CACHE_DIR"] = original_dir
-    elif "DISK_CACHE_DIR" in os.environ:
-        del os.environ["DISK_CACHE_DIR"]
+    # Restore original (though monkeypatch should handle this)
+    monkeypatch.setattr(settings, "disk_cache_dir", original_dir)
 
 
 @pytest.fixture
-def telegram_queue() -> TelegramRequestQueue:
-    """Telegram request queue instance."""
-    return TelegramRequestQueue(max_concurrent=2, delay_ms=50, adaptive=True)
+async def telegram_queue() -> AsyncGenerator[TelegramRequestQueue, None]:
+    """Telegram request queue instance with proper cleanup."""
+    queue = TelegramRequestQueue(max_concurrent=2, delay_ms=50, adaptive=True)
+    yield queue
+    # Cleanup: shutdown queue processor to prevent warnings
+    if queue._running:
+        await queue.shutdown()
 
 
 @pytest.fixture
@@ -239,15 +245,21 @@ def rate_limit_middleware(app: FastAPI) -> RateLimitMiddleware:
 async def fake_redis_service() -> AsyncGenerator[RedisService, None]:
     """Fake Redis service using fakeredis (for unit tests)."""
     try:
-        import fakeredis.aioredis as fakeredis
+        from fakeredis.aioredis import FakeRedis
     except ImportError:
         pytest.skip("fakeredis not installed")
     
     service = RedisService()
-    # Replace real Redis with fake one
-    service.redis = fakeredis.FakeRedis(decode_responses=False)
+    # Create fake Redis server and client
+    fake_server = FakeRedis(decode_responses=False)
+    # Use the server directly as the redis client
+    service.redis = fake_server
     yield service
-    await service.redis.close()
+    # Cleanup
+    try:
+        await fake_server.close()
+    except Exception:
+        pass
 
 
 # =============================================================================

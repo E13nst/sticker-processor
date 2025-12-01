@@ -14,7 +14,8 @@ class TestTelegramRequestQueue:
     @allure.title("Queue initialization")
     @allure.description("Test that queue initializes with correct parameters")
     @allure.severity(allure.severity_level.NORMAL)
-    def test_queue_initialization(self, telegram_queue):
+    @pytest.mark.asyncio
+    async def test_queue_initialization(self, telegram_queue):
         """Test queue initializes correctly."""
         with allure.step("Check queue instance"):
             assert telegram_queue is not None

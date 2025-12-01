@@ -95,7 +95,15 @@ class RedisService:
             
             if cached_data:
                 # Deserialize cached data
-                data = json.loads(cached_data.decode('utf-8'))
+                # Handle both bytes and str (for fakeredis compatibility)
+                try:
+                    if isinstance(cached_data, bytes):
+                        data = json.loads(cached_data.decode('utf-8'))
+                    else:
+                        data = json.loads(cached_data)
+                except (AttributeError, TypeError):
+                    # For fakeredis, might need to convert differently
+                    data = json.loads(str(cached_data, 'utf-8') if isinstance(cached_data, (bytes, bytearray)) else cached_data)
                 
                 # Convert base64 file_data back to bytes
                 import base64
@@ -152,7 +160,11 @@ class RedisService:
             
             # Store with TTL
             ttl_seconds = self.ttl_days * 24 * 60 * 60
-            await self.redis.setex(key, ttl_seconds, json.dumps(data))
+            json_data = json.dumps(data)
+            # Ensure we pass bytes to setex for compatibility
+            if isinstance(json_data, str):
+                json_data = json_data.encode('utf-8')
+            await self.redis.setex(key, ttl_seconds, json_data)
             
             logger.info(f"Stored sticker {sticker_cache.file_id} in cache")
             return True
@@ -194,7 +206,14 @@ class RedisService:
                 try:
                     cached_data = await self.redis.get(key)
                     if cached_data:
-                        data = json.loads(cached_data.decode('utf-8'))
+                        # Handle both bytes and str (for fakeredis compatibility)
+                        try:
+                            if isinstance(cached_data, bytes):
+                                data = json.loads(cached_data.decode('utf-8'))
+                            else:
+                                data = json.loads(cached_data)
+                        except (AttributeError, TypeError):
+                            data = json.loads(str(cached_data, 'utf-8') if isinstance(cached_data, (bytes, bytearray)) else cached_data)
                         total_size_bytes += data.get('file_size', 0)
                         if data.get('is_converted', False):
                             converted_files += 1
