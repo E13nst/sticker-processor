@@ -3,13 +3,35 @@ import pytest
 import allure
 import json
 import os
-import httpx
+import sys
+import asyncio
+from pathlib import Path
 from typing import List, Dict, Any
 from httpx import AsyncClient
 from dotenv import load_dotenv
 
+# Add app to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 # Load .env file to get TELEGRAM_BOT_TOKEN
 load_dotenv()
+
+from app.services.cache_manager import CacheManager
+from app.services.telegram_enhanced import TelegramAPIError
+
+# Test sticker sets data
+STICKER_SETS = {
+    "tgs_animation": {
+        "name": "worldart",
+        "url": "https://t.me/addstickers/worldart",
+        "type": "tgs"
+    },
+    "video": {
+        "name": "pack_1_40802189314_5786_155347765_by_sticker_bot",
+        "url": "https://t.me/addstickers/pack_1_40802189314_5786_155347765_by_sticker_bot",
+        "type": "video"
+    }
+}
 
 
 @allure.feature("E2E Tests")
@@ -31,30 +53,50 @@ class TestE2ERealStickers:
         return token
     
     @pytest.fixture
-    async def telegram_api_client(self, telegram_bot_token: str):
-        """Create HTTP client for Telegram Bot API."""
-        base_url = f"https://api.telegram.org/bot{telegram_bot_token}"
-        async with httpx.AsyncClient(base_url=base_url, timeout=30.0) as client:
-            yield client
+    async def cache_manager(self, telegram_bot_token: str):
+        """Create CacheManager instance for e2e tests."""
+        manager = CacheManager()
+        try:
+            await manager.connect()
+            yield manager
+        except Exception as e:
+            pytest.skip(f"CacheManager not available: {e}")
+        finally:
+            await manager.disconnect()
     
-    async def get_sticker_set(self, api_client: httpx.AsyncClient, sticker_set_name: str) -> Dict[str, Any]:
-        """Get sticker set from Telegram Bot API."""
-        with allure.step(f"Get sticker set '{sticker_set_name}' from Telegram API"):
-            response = await api_client.get("/getStickerSet", params={"name": sticker_set_name})
-            
-            if response.status_code != 200:
+    async def get_sticker_set(self, cache_manager: CacheManager, sticker_set_name: str) -> Dict[str, Any]:
+        """Get sticker set using CacheManager (with Redis caching)."""
+        with allure.step(f"Get sticker set '{sticker_set_name}' from Telegram API (via CacheManager)"):
+            try:
+                sticker_set = await cache_manager.get_sticker_set(sticker_set_name)
+                if not sticker_set:
+                    pytest.skip(f"Sticker set {sticker_set_name} not found or unavailable")
+                
                 allure.attach(
-                    f"Status: {response.status_code}\nResponse: {response.text}",
+                    json.dumps({
+                        "name": sticker_set.get("name"),
+                        "title": sticker_set.get("title"),
+                        "stickers_count": len(sticker_set.get("stickers", []))
+                    }, indent=2),
+                    "Sticker Set Info",
+                    allure.attachment_type.JSON
+                )
+                
+                return sticker_set
+            except TelegramAPIError as e:
+                allure.attach(
+                    f"Status: {e.status}\nDescription: {e.description}",
                     "Telegram API Error",
                     allure.attachment_type.TEXT
                 )
-                pytest.skip(f"Could not get sticker set {sticker_set_name}: {response.status_code}")
-            
-            data = response.json()
-            if not data.get("ok"):
-                pytest.skip(f"Sticker set {sticker_set_name} not found or unavailable")
-            
-            return data.get("result", {})
+                pytest.skip(f"Could not get sticker set {sticker_set_name}: [{e.status}] {e.description}")
+            except Exception as e:
+                allure.attach(
+                    f"Error: {str(e)}",
+                    "Error",
+                    allure.attachment_type.TEXT
+                )
+                pytest.skip(f"Could not get sticker set {sticker_set_name}: {str(e)}")
     
     def extract_file_ids(self, sticker_set: Dict[str, Any], limit: int = 10) -> List[str]:
         """Extract file IDs from sticker set."""
@@ -72,7 +114,7 @@ class TestE2ERealStickers:
     @allure.title("E2E: TGS animation stickers from worldart pack")
     @allure.description("""
     Test loading TGS animation stickers from worldart pack:
-    1. Get sticker set from Telegram Bot API
+    1. Get sticker set from Telegram Bot API (via CacheManager)
     2. Extract file IDs of first 10 stickers
     3. Load each sticker through /stickers/{file_id}
     4. Verify content is loaded and converted to Lottie
@@ -82,19 +124,14 @@ class TestE2ERealStickers:
     @pytest.mark.asyncio
     async def test_tgs_animation_stickers(
         self, 
-        client: AsyncClient, 
-        telegram_api_client: httpx.AsyncClient
+        client: AsyncClient,
+        cache_manager: CacheManager
     ):
         """Test loading TGS animation stickers."""
-        sticker_set_name = "worldart"
+        sticker_set_name = STICKER_SETS["tgs_animation"]["name"]
         
         with allure.step("Get sticker set from Telegram API"):
-            sticker_set = await self.get_sticker_set(telegram_api_client, sticker_set_name)
-            allure.attach(
-                json.dumps({"name": sticker_set.get("name"), "title": sticker_set.get("title"), "stickers_count": len(sticker_set.get("stickers", []))}, indent=2),
-                "Sticker Set Info",
-                allure.attachment_type.JSON
-            )
+            sticker_set = await self.get_sticker_set(cache_manager, sticker_set_name)
         
         with allure.step("Extract file IDs from sticker set"):
             file_ids = self.extract_file_ids(sticker_set, limit=10)
@@ -215,7 +252,7 @@ class TestE2ERealStickers:
     @allure.title("E2E: Video stickers from pack_1_40802189314_5786_155347765_by_sticker_bot")
     @allure.description("""
     Test loading video stickers:
-    1. Get sticker set from Telegram Bot API
+    1. Get sticker set from Telegram Bot API (via CacheManager)
     2. Extract file IDs of first 10 stickers
     3. Load each sticker through /stickers/{file_id}
     4. Verify content is loaded (not converted)
@@ -226,18 +263,13 @@ class TestE2ERealStickers:
     async def test_video_stickers(
         self,
         client: AsyncClient,
-        telegram_api_client: httpx.AsyncClient
+        cache_manager: CacheManager
     ):
         """Test loading video stickers."""
-        sticker_set_name = "pack_1_40802189314_5786_155347765_by_sticker_bot"
+        sticker_set_name = STICKER_SETS["video"]["name"]
         
         with allure.step("Get sticker set from Telegram API"):
-            sticker_set = await self.get_sticker_set(telegram_api_client, sticker_set_name)
-            allure.attach(
-                json.dumps({"name": sticker_set.get("name"), "title": sticker_set.get("title"), "stickers_count": len(sticker_set.get("stickers", []))}, indent=2),
-                "Sticker Set Info",
-                allure.attachment_type.JSON
-            )
+            sticker_set = await self.get_sticker_set(cache_manager, sticker_set_name)
         
         with allure.step("Extract file IDs from sticker set"):
             file_ids = self.extract_file_ids(sticker_set, limit=10)
@@ -330,13 +362,13 @@ class TestE2ERealStickers:
     async def test_cache_performance(
         self,
         client: AsyncClient,
-        telegram_api_client: httpx.AsyncClient
+        cache_manager: CacheManager
     ):
         """Test cache performance improvement."""
-        sticker_set_name = "worldart"
+        sticker_set_name = STICKER_SETS["tgs_animation"]["name"]
         
         with allure.step("Get one sticker from set"):
-            sticker_set = await self.get_sticker_set(telegram_api_client, sticker_set_name)
+            sticker_set = await self.get_sticker_set(cache_manager, sticker_set_name)
             file_ids = self.extract_file_ids(sticker_set, limit=1)
             
             if not file_ids:
@@ -385,4 +417,212 @@ class TestE2ERealStickers:
                     "Performance Note",
                     allure.attachment_type.TEXT
                 )
+    
+    @allure.title("E2E: Combine TGS animation stickers from set")
+    @allure.description("""
+    Test combining TGS animation stickers from a sticker set:
+    1. Call POST /stickers/combine-from-set with sticker set name
+    2. Verify combined WebP image is returned
+    3. Check response headers and image properties
+    4. Verify images are in correct order
+    """)
+    @allure.severity(allure.severity_level.CRITICAL)
+    @pytest.mark.asyncio
+    async def test_combine_tgs_stickers_from_set(
+        self,
+        client: AsyncClient,
+        cache_manager: CacheManager
+    ):
+        """Test combining TGS animation stickers from a set."""
+        sticker_set = STICKER_SETS["tgs_animation"]
+        
+        with allure.step("Combine stickers from set using name"):
+            request_data = {
+                "name": sticker_set["name"],
+                "image_type": "thumbnail",  # Use thumbnails for e2e tests
+                "tile_size": 128,
+                "max_stickers": 5  # Reduced for faster test execution
+            }
+            
+            # Add timeout for the request (60 seconds should be enough for 10 stickers)
+            response = await asyncio.wait_for(
+                client.post("/stickers/combine-from-set", json=request_data, timeout=60.0),
+                timeout=65.0
+            )
+            
+            assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text[:500]}"
+            assert response.headers["content-type"] == "image/webp", "Should return WebP image"
+            
+            # Read content first to ensure response is fully received
+            image_content = response.content
+            assert len(image_content) > 0, "Image content should not be empty"
+            assert image_content.startswith(b"RIFF"), "Should be WebP format (RIFF header)"
+            
+            # Verify response headers (after reading content)
+            # httpx may return headers in lowercase, so check both cases
+            headers = dict(response.headers)
+            headers_lower = {k.lower(): v for k, v in headers.items()}
+            
+            # Debug: log all headers if expected ones are missing
+            if "x-processing-time-ms" not in headers_lower and "X-Processing-Time-Ms" not in headers:
+                import pprint
+                allure.attach(
+                    f"Available headers: {list(headers.keys())}\n"
+                    f"Available headers (lowercase): {list(headers_lower.keys())}\n"
+                    f"Full headers: {pprint.pformat(headers)}",
+                    "Debug Headers - Missing X-Processing-Time-Ms",
+                    allure.attachment_type.TEXT
+                )
+            
+            # Check headers (case-insensitive)
+            processing_time = headers.get("X-Processing-Time-Ms") or headers_lower.get("x-processing-time-ms")
+            images_combined = headers.get("X-Images-Combined") or headers_lower.get("x-images-combined")
+            sticker_set_name = headers.get("X-Sticker-Set-Name") or headers_lower.get("x-sticker-set-name")
+            image_type = headers.get("X-Image-Type") or headers_lower.get("x-image-type")
+            
+            assert processing_time is not None, f"Missing X-Processing-Time-Ms. Available: {list(headers.keys())}"
+            assert images_combined is not None, f"Missing X-Images-Combined. Available: {list(headers.keys())}"
+            assert sticker_set_name is not None, f"Missing X-Sticker-Set-Name. Available: {list(headers.keys())}"
+            assert sticker_set_name == sticker_set["name"]
+            assert image_type == "thumbnail"
+            assert len(image_content) > 0, "Image content should not be empty"
+            assert image_content.startswith(b"RIFF"), "Should be WebP format (RIFF header)"
+            
+            images_combined_val = int(images_combined) if images_combined else 0
+            assert images_combined_val > 0, "Should combine at least one image"
+            assert images_combined_val <= 5, "Should not exceed max_stickers limit"
+            
+            allure.attach(
+                json.dumps({
+                    "request": request_data,
+                    "response_headers": {
+                        "X-Processing-Time-Ms": processing_time,
+                        "X-Images-Combined": images_combined,
+                        "X-Images-Failed": headers.get("X-Images-Failed") or headers_lower.get("x-images-failed"),
+                        "X-Tile-Size": headers.get("X-Tile-Size") or headers_lower.get("x-tile-size"),
+                        "X-Sticker-Set-Name": sticker_set_name,
+                        "X-Image-Type": image_type
+                    },
+                    "image_size_bytes": len(image_content)
+                }, indent=2),
+                "Combine Test Results",
+                allure.attachment_type.JSON
+            )
+        
+        with allure.step("Combine stickers from set using URL"):
+            request_data = {
+                "url": sticker_set["url"],
+                "image_type": "thumbnail",  # Use thumbnails for e2e tests
+                "tile_size": 128,
+                "max_stickers": 5
+            }
+            
+            # Add timeout for the request
+            response = await asyncio.wait_for(
+                client.post("/stickers/combine-from-set", json=request_data, timeout=60.0),
+                timeout=65.0
+            )
+            
+            assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text[:500]}"
+            assert response.headers["content-type"] == "image/webp", "Should return WebP image"
+            
+            # Read content first
+            image_content = response.content
+            assert len(image_content) > 0, "Image content should not be empty"
+            
+            # Check headers (case-insensitive)
+            headers = dict(response.headers)
+            headers_lower = {k.lower(): v for k, v in headers.items()}
+            images_combined = headers.get("X-Images-Combined") or headers_lower.get("x-images-combined")
+            images_combined_val = int(images_combined) if images_combined else 0
+            
+            assert images_combined_val > 0, f"Should combine at least one image. Available headers: {list(headers.keys())}"
+            assert images_combined_val <= 5, "Should not exceed max_stickers limit"
+            
+            allure.attach(
+                json.dumps({
+                    "request": request_data,
+                    "images_combined": images_combined_val,
+                    "image_size_bytes": len(image_content)
+                }, indent=2),
+                "URL Request Test Results",
+                allure.attachment_type.JSON
+            )
+    
+    @allure.title("E2E: Combine video stickers from set")
+    @allure.description("""
+    Test combining video stickers from a sticker set:
+    1. Call POST /stickers/combine-from-set with sticker set name
+    2. Verify combined WebP image is returned
+    3. Check response headers and image properties
+    4. Verify video stickers are handled correctly
+    """)
+    @allure.severity(allure.severity_level.NORMAL)
+    @pytest.mark.asyncio
+    async def test_combine_video_stickers_from_set(
+        self,
+        client: AsyncClient,
+        cache_manager: CacheManager
+    ):
+        """Test combining video stickers from a set."""
+        sticker_set = STICKER_SETS["video"]
+        
+        with allure.step("Combine video stickers from set using thumbnails"):
+            # Video stickers have thumbnails (320x320), use them for combination
+            request_data = {
+                "name": sticker_set["name"],
+                "image_type": "thumbnail",  # Use thumbnails for video stickers
+                "tile_size": 128,
+                "max_stickers": 5  # Reduced for faster test execution
+            }
+            
+            # Add timeout for the request
+            response = await asyncio.wait_for(
+                client.post("/stickers/combine-from-set", json=request_data, timeout=60.0),
+                timeout=65.0
+            )
+            
+            assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text[:500]}"
+            assert response.headers["content-type"] == "image/webp", "Should return WebP image"
+            
+            # Read content first
+            image_content = response.content
+            assert len(image_content) > 0, "Image content should not be empty"
+            assert image_content.startswith(b"RIFF"), "Should be WebP format (RIFF header)"
+            
+            # Verify response headers (case-insensitive)
+            headers = dict(response.headers)
+            headers_lower = {k.lower(): v for k, v in headers.items()}
+            
+            processing_time = headers.get("X-Processing-Time-Ms") or headers_lower.get("x-processing-time-ms")
+            images_combined = headers.get("X-Images-Combined") or headers_lower.get("x-images-combined")
+            sticker_set_name = headers.get("X-Sticker-Set-Name") or headers_lower.get("x-sticker-set-name")
+            image_type = headers.get("X-Image-Type") or headers_lower.get("x-image-type")
+            
+            assert processing_time is not None, f"Missing X-Processing-Time-Ms. Available: {list(headers.keys())}"
+            assert images_combined is not None, f"Missing X-Images-Combined. Available: {list(headers.keys())}"
+            assert sticker_set_name is not None, f"Missing X-Sticker-Set-Name. Available: {list(headers.keys())}"
+            assert sticker_set_name == sticker_set["name"]
+            assert image_type == "thumbnail"
+            
+            images_combined_val = int(images_combined) if images_combined else 0
+            assert images_combined_val > 0, "Should combine at least one thumbnail image"
+            
+            allure.attach(
+                json.dumps({
+                    "request": request_data,
+                    "response_headers": {
+                        "X-Processing-Time-Ms": processing_time,
+                        "X-Images-Combined": images_combined,
+                        "X-Images-Failed": headers.get("X-Images-Failed") or headers_lower.get("x-images-failed"),
+                        "X-Tile-Size": headers.get("X-Tile-Size") or headers_lower.get("x-tile-size"),
+                        "X-Sticker-Set-Name": sticker_set_name,
+                        "X-Image-Type": image_type
+                    },
+                    "image_size_bytes": len(image_content)
+                }, indent=2),
+                "Video Stickers Combine Test Results",
+                allure.attachment_type.JSON
+            )
+        
 

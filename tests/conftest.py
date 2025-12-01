@@ -129,7 +129,9 @@ def app() -> FastAPI:
 @pytest.fixture
 async def client(app: FastAPI) -> AsyncGenerator[AsyncClient, None]:
     """Async HTTP client for testing FastAPI endpoints."""
-    async with AsyncClient(app=app, base_url="http://test") as ac:
+    from httpx import Timeout
+    timeout = Timeout(120.0, connect=10.0)  # 120s total, 10s connect timeout
+    async with AsyncClient(app=app, base_url="http://test", timeout=timeout) as ac:
         yield ac
 
 

@@ -4,7 +4,7 @@ from fastapi.responses import StreamingResponse
 
 from app.services.cache_manager import CacheManager
 from app.handlers.sticker_handler import StickerHandler
-from app.models.requests import CombineStickersRequest
+from app.models.requests import CombineStickersRequest, CombineStickerSetRequest
 
 
 def create_sticker_router(cache_manager: CacheManager) -> APIRouter:
@@ -91,6 +91,61 @@ def create_sticker_router(cache_manager: CacheManager) -> APIRouter:
         return await handler.combine_stickers(
             file_ids=request.file_ids,
             tile_size=request.tile_size
+        )
+    
+    @router.post(
+        "/stickers/combine-from-set",
+        response_class=StreamingResponse,
+        summary="Combine Stickers from Set",
+        description="""
+        Combine stickers from a Telegram sticker set into a single grid image.
+        
+        **Features:**
+        - Accepts either sticker set name or URL (e.g., "https://t.me/addstickers/arcticfox")
+        - Fetches sticker set metadata from Telegram Bot API (with Redis caching for 1 day)
+        - Extracts images in the exact order they appear in the sticker set
+        - Supports different image types:
+          - "main" (default): Full-size sticker images
+          - "thumbnail": Thumbnail images (128x128)
+          - "thumb": Alternative thumb images
+        - Downloads and caches all images using multi-level caching
+        - Resizes each image to square tiles (default 128x128) with preserved aspect ratio
+        - Arranges images in a grid layout close to square
+        - Returns combined image in WebP format
+        - Skips failed files (errors only if all files fail)
+        - Supports limiting the number of stickers processed via `max_stickers` parameter
+        
+        **Image Processing:**
+        - Images are resized maintaining aspect ratio
+        - Non-square images are centered on square canvas with white background
+        - Only image formats are processed (TGS/Lottie JSON and WebM are skipped)
+        """,
+        tags=["Stickers"],
+        responses={
+            200: {
+                "description": "Combined WebP image",
+                "headers": {
+                    "X-Processing-Time-Ms": {"description": "Processing time in milliseconds"},
+                    "X-Images-Combined": {"description": "Number of images successfully combined"},
+                    "X-Images-Failed": {"description": "Number of images that failed to load"},
+                    "X-Tile-Size": {"description": "Size of each tile in pixels"},
+                    "X-Sticker-Set-Name": {"description": "Name of the sticker set"},
+                    "X-Image-Type": {"description": "Type of images used (main/thumbnail/thumb)"},
+                    "Content-Type": {"description": "image/webp"}
+                }
+            },
+            400: {"description": "Bad request (missing name/url or invalid parameters)"},
+            404: {"description": "Sticker set not found or no valid images in set"},
+            500: {"description": "Internal server error"}
+        }
+    )
+    async def combine_sticker_set(request: CombineStickerSetRequest):
+        """Combine stickers from a sticker set into a single grid image."""
+        return await handler.combine_sticker_set(
+            name=request.name,
+            image_type=request.image_type or "main",
+            tile_size=request.tile_size,
+            max_stickers=request.max_stickers
         )
     
     return router

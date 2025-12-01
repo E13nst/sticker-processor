@@ -84,6 +84,10 @@ class RedisService:
         """Generate cache key for file."""
         return f"sticker:file:{file_id}"
     
+    def _get_sticker_set_cache_key(self, name: str) -> str:
+        """Generate cache key for sticker set."""
+        return f"sticker_set:{name}"
+    
     async def get_sticker(self, file_id: str) -> Optional[StickerCache]:
         """Get sticker from cache."""
         if not self.redis:
@@ -257,6 +261,73 @@ class RedisService:
         except Exception as e:
             logger.error(f"Error getting cache stats: {e}")
             return None
+    
+    async def get_sticker_set(self, name: str) -> Optional[Dict[str, Any]]:
+        """Get sticker set from cache."""
+        if not self.redis:
+            return None
+        
+        try:
+            key = self._get_sticker_set_cache_key(name)
+            cached_data = await self.redis.get(key)
+            
+            if cached_data:
+                # Deserialize cached data
+                try:
+                    if isinstance(cached_data, bytes):
+                        data = json.loads(cached_data.decode('utf-8'))
+                    else:
+                        data = json.loads(cached_data)
+                except (AttributeError, TypeError):
+                    data = json.loads(str(cached_data, 'utf-8') if isinstance(cached_data, (bytes, bytearray)) else cached_data)
+                
+                logger.info(f"Retrieved sticker set {name} from cache")
+                return data
+            else:
+                logger.debug(f"Sticker set {name} not found in cache")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error getting sticker set {name} from cache: {e}")
+            return None
+    
+    async def set_sticker_set(self, name: str, data: Dict[str, Any]) -> bool:
+        """Store sticker set in cache."""
+        if not self.redis:
+            return False
+        
+        try:
+            key = self._get_sticker_set_cache_key(name)
+            
+            # Store as JSON string with TTL = 1 day (86400 seconds)
+            ttl_seconds = 86400  # 1 day
+            json_data = json.dumps(data)
+            json_bytes = json_data.encode('utf-8')
+            
+            # Try setex first (standard Redis)
+            try:
+                await self.redis.setex(key, ttl_seconds, json_bytes)
+            except (TypeError, AttributeError, RuntimeError) as e:
+                # Fallback for fakeredis compatibility: use set + expire
+                # Some fakeredis versions have issues with setex
+                try:
+                    await self.redis.set(key, json_bytes)
+                    await self.redis.expire(key, ttl_seconds)
+                except Exception:
+                    # If that also fails, try with string
+                    try:
+                        await self.redis.set(key, json_data)
+                        await self.redis.expire(key, ttl_seconds)
+                    except Exception as inner_e:
+                        logger.error(f"Error storing sticker set {name} in cache (fallback): {inner_e}")
+                        raise e
+            
+            logger.info(f"Stored sticker set {name} in cache")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error storing sticker set {name} in cache: {e}")
+            return False
     
     async def clear_all_cache(self) -> bool:
         """Clear all cached stickers."""

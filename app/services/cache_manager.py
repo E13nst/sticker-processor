@@ -111,6 +111,46 @@ class CacheManager:
         
         return result
     
+    async def get_sticker_set(self, name: str) -> Optional[Dict[str, Any]]:
+        """
+        Get sticker set with Redis caching.
+        
+        Args:
+            name: Sticker set name
+            
+        Returns:
+            Sticker set JSON data or None
+        """
+        # Check Redis cache first
+        cached_set = await self.redis_service.get_sticker_set(name)
+        if cached_set:
+            logger.info(f"Retrieved sticker set {name} from Redis cache")
+            return cached_set
+        
+        # Fetch from Telegram API
+        logger.info(f"Fetching sticker set {name} from Telegram API")
+        try:
+            sticker_set = await self.telegram_service.get_sticker_set(name)
+            if sticker_set:
+                # Cache in Redis
+                await self.redis_service.set_sticker_set(name, sticker_set)
+                logger.info(f"Cached sticker set {name} in Redis")
+                return sticker_set
+            return None
+        except TelegramAPIError as te:
+            logger.error(f"Telegram API error getting sticker set {name}: [{te.status}] {te.description}")
+            raise te
+        except RuntimeError as e:
+            # Handle "Event loop is closed" errors - re-raise to avoid silent failures
+            if "Event loop is closed" in str(e):
+                logger.error(f"Event loop closed while getting sticker set {name}: {e}")
+                raise
+            logger.error(f"Runtime error getting sticker set {name}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Error getting sticker set {name}: {e}")
+            return None
+    
     async def _check_redis(
         self, 
         file_id: str, 

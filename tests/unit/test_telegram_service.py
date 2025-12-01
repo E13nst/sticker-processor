@@ -94,4 +94,10 @@ class TestTelegramService:
         stats = telegram_service.get_statistics()
         assert stats['errors_by_type']['TIMEOUT'] == 2
         assert stats['errors_by_type']['HTTP_500'] == 1
+    
+    @pytest.mark.asyncio
+    async def test_get_sticker_set_method_exists(self, telegram_service):
+        """Test that get_sticker_set method exists."""
+        assert hasattr(telegram_service, 'get_sticker_set')
+        assert callable(telegram_service.get_sticker_set)
 

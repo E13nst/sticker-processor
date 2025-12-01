@@ -3,6 +3,7 @@ import pytest
 import allure
 from unittest.mock import AsyncMock, Mock, patch
 from app.services.cache_manager import CacheManager
+from app.services.telegram_enhanced import TelegramAPIError
 from app.models.responses import StickerCache
 from datetime import datetime
 
@@ -232,4 +233,77 @@ class TestCacheManager:
             stats = await cache_manager.get_cache_stats()
             assert stats is not None
             assert 'total_files' in stats or 'conversions_performed' in stats
+    
+    @allure.title("Get sticker set from Redis cache")
+    @allure.description("Test retrieving sticker set from Redis cache")
+    @allure.severity(allure.severity_level.NORMAL)
+    @pytest.mark.asyncio
+    async def test_get_sticker_set_from_cache(self, cache_manager):
+        """Test getting sticker set from Redis cache."""
+        from unittest.mock import AsyncMock
+        
+        sticker_set_name = "test_set"
+        sticker_set_data = {
+            "name": "test_set",
+            "title": "Test Set",
+            "stickers": [{"file_id": "file1"}]
+        }
+        
+        # Mock Redis service to return cached data
+        cache_manager.redis_service.get_sticker_set = AsyncMock(return_value=sticker_set_data)
+        cache_manager.telegram_service.get_sticker_set = AsyncMock(return_value=None)
+        
+        # Retrieve via cache manager
+        result = await cache_manager.get_sticker_set(sticker_set_name)
+        
+        assert result is not None
+        assert result["name"] == sticker_set_data["name"]
+        assert result["title"] == sticker_set_data["title"]
+        cache_manager.redis_service.get_sticker_set.assert_called_once_with(sticker_set_name)
+        cache_manager.telegram_service.get_sticker_set.assert_not_called()
+    
+    @allure.title("Get sticker set from Telegram API")
+    @allure.description("Test fetching sticker set from Telegram API when not in cache")
+    @allure.severity(allure.severity_level.NORMAL)
+    @pytest.mark.asyncio
+    async def test_get_sticker_set_from_telegram(self, cache_manager):
+        """Test getting sticker set from Telegram API when not cached."""
+        sticker_set_name = "test_set"
+        sticker_set_data = {
+            "name": "test_set",
+            "title": "Test Set",
+            "stickers": [{"file_id": "file1"}]
+        }
+        
+        # Mock Telegram service to return sticker set
+        cache_manager.telegram_service.get_sticker_set = AsyncMock(return_value=sticker_set_data)
+        cache_manager.redis_service.set_sticker_set = AsyncMock(return_value=True)
+        
+        # Get sticker set (should fetch from Telegram and cache it)
+        result = await cache_manager.get_sticker_set(sticker_set_name)
+        
+        assert result is not None
+        assert result["name"] == sticker_set_data["name"]
+        
+        # Verify it was cached
+        cache_manager.redis_service.set_sticker_set.assert_called_once()
+    
+    @allure.title("Get sticker set handles Telegram API error")
+    @allure.description("Test handling Telegram API errors when getting sticker set")
+    @allure.severity(allure.severity_level.NORMAL)
+    @pytest.mark.asyncio
+    async def test_get_sticker_set_handles_error(self, cache_manager):
+        """Test handling errors when getting sticker set."""
+        sticker_set_name = "nonexistent_set"
+        
+        # Mock Telegram service to raise error
+        error = TelegramAPIError(404, "Sticker set not found")
+        cache_manager.telegram_service.get_sticker_set = AsyncMock(side_effect=error)
+        
+        # Should raise TelegramAPIError
+        with pytest.raises(TelegramAPIError) as exc_info:
+            await cache_manager.get_sticker_set(sticker_set_name)
+        
+        assert exc_info.value.status == 404
+        assert "not found" in exc_info.value.description.lower()
 

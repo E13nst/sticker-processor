@@ -537,6 +537,135 @@ class TelegramServiceEnhanced:
                     message=response_text[:200]
                 )
     
+    async def get_sticker_set(self, name: str) -> Optional[dict]:
+        """Get sticker set from Telegram Bot API with retry logic and queue."""
+        async def _get_with_retry(name):
+            return await self._retry_with_backoff(self._get_sticker_set_internal, name)
+        
+        return await self.request_queue.execute(_get_with_retry, name)
+    
+    async def _get_sticker_set_internal(self, name: str) -> Optional[dict]:
+        """Internal method to get sticker set from Telegram Bot API."""
+        url = f"{self.api_base_url}/bot{self.bot_token}/getStickerSet"
+        params = {"name": name}
+        
+        # Start timing
+        start_time = time.time()
+        request_id = f"getStickerSet-{name[:12]}"
+        
+        if settings.telegram_api_detailed_logging:
+            api_logger.info(f"[{request_id}] 🌐 Telegram API: getStickerSet request for name={name}")
+            api_logger.debug(f"[{request_id}] URL: {self.api_base_url}/bot****/getStickerSet")
+            api_logger.debug(f"[{request_id}] Params: name={name}")
+        
+        session = await self._get_session()
+        async with session.get(url, params=params) as response:
+            elapsed_ms = int((time.time() - start_time) * 1000)
+            
+            # Log response headers
+            if settings.telegram_api_detailed_logging:
+                api_logger.debug(f"[{request_id}] Response Status: {response.status}")
+                api_logger.debug(f"[{request_id}] Response Headers: {dict(response.headers)}")
+                api_logger.debug(f"[{request_id}] Response Time: {elapsed_ms}ms")
+            
+            # Handle rate limiting
+            if response.status == 429:
+                retry_after = None
+                if 'retry-after' in response.headers:
+                    try:
+                        retry_after = int(response.headers['retry-after'])
+                    except (ValueError, TypeError):
+                        pass
+                
+                self._handle_rate_limit(retry_after)
+                
+                # Create a custom exception with status and headers
+                error = aiohttp.ClientResponseError(
+                    request_info=response.request_info,
+                    history=response.history,
+                    status=429,
+                    message="Too Many Requests"
+                )
+                error.headers = response.headers
+                raise error
+            
+            if response.status == 200:
+                data = await response.json()
+                
+                if data.get("ok"):
+                    result = data.get("result", {})
+                    stickers_count = len(result.get("stickers", []))
+                    
+                    # Record success
+                    self._record_success(elapsed_ms)
+                    
+                    if settings.telegram_api_detailed_logging:
+                        api_logger.info(
+                            f"[{request_id}] ✓ getStickerSet SUCCESS - "
+                            f"name={name}, stickers_count={stickers_count}, "
+                            f"time={elapsed_ms}ms"
+                        )
+                    return result
+                else:
+                    error_code = int(data.get("error_code", 400) or 400)
+                    error_desc = data.get("description", "Bad Request")
+                    
+                    # Record error
+                    self._record_error(f"API_ERROR_{error_code}", elapsed_ms)
+                    
+                    api_logger.error(
+                        f"[{request_id}] ✗ Telegram API Error - "
+                        f"code={error_code}, description={error_desc}, "
+                        f"name={name}, time={elapsed_ms}ms"
+                    )
+                    logger.error(f"Telegram API error for sticker set {name}: [{error_code}] {error_desc}")
+                    
+                    # If Telegram signals Too Many Requests via body, handle as rate limit
+                    if error_code == 429:
+                        self._handle_rate_limit()
+                        err = aiohttp.ClientResponseError(
+                            request_info=response.request_info,
+                            history=response.history,
+                            status=429,
+                            message=error_desc
+                        )
+                        raise err
+                    
+                    # Non-retriable: propagate exact code and message
+                    raise TelegramAPIError(error_code, error_desc)
+            else:
+                # Non-200 HTTP status
+                response_text = await response.text()
+                
+                # Record error for other HTTP statuses and propagate exact status/message
+                self._record_error(f"HTTP_{response.status}", elapsed_ms)
+                
+                api_logger.error(
+                    f"[{request_id}] ✗ HTTP Error {response.status} - "
+                    f"name={name}, time={elapsed_ms}ms"
+                )
+                
+                if settings.telegram_api_detailed_logging:
+                    api_logger.debug(f"[{request_id}] Response Body: {response_text[:500]}")
+                
+                logger.error(
+                    f"HTTP {response.status} error getting sticker set {name}: {response_text[:200]}"
+                )
+                
+                if response.status == 429:
+                    # Keep 429 as retriable
+                    error = aiohttp.ClientResponseError(
+                        request_info=response.request_info,
+                        history=response.history,
+                        status=429,
+                        message="Too Many Requests"
+                    )
+                    error.headers = response.headers
+                    raise error
+                
+                # Non-retriable: propagate exact status and body snippet
+                raise TelegramAPIError(response.status, response_text[:200])
+    
     def detect_file_format(self, file_path: str, content: bytes) -> str:
         """Detect file format based on file path and content."""
         # Check file extension first
