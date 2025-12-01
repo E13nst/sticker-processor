@@ -1,10 +1,13 @@
 """Unit tests for converter service."""
 import pytest
+import allure
 import gzip
 import json
 from app.services.converter import ConverterService
 
 
+@allure.feature("Format Conversion")
+@allure.tag("converter", "tgs", "lottie", "unit")
 @pytest.mark.unit
 class TestConverterService:
     """Test ConverterService functionality."""

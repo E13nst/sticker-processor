@@ -1,8 +1,11 @@
 """Unit tests for Telegram service."""
 import pytest
+import allure
 from app.services.telegram_enhanced import TelegramServiceEnhanced
 
 
+@allure.feature("Telegram Service")
+@allure.tag("telegram", "api", "unit")
 @pytest.mark.unit
 class TestTelegramService:
     """Test TelegramService functionality."""

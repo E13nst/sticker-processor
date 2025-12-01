@@ -3,6 +3,9 @@ import os
 import sys
 import pytest
 import asyncio
+import tempfile
+import shutil
+from pathlib import Path
 from typing import AsyncGenerator, Generator
 from httpx import AsyncClient
 from fastapi import FastAPI
@@ -15,6 +18,80 @@ from app.main import app as fastapi_app
 from app.services.redis import RedisService
 from app.services.telegram_enhanced import TelegramServiceEnhanced
 from app.services.converter import ConverterService
+from app.services.cache_manager import CacheManager
+from app.services.cache_strategy import CacheStrategy
+from app.services.disk_cache import DiskCacheService
+from app.services.telegram_queue import TelegramRequestQueue
+from app.middleware.rate_limit import RateLimitMiddleware
+
+# Allure integration
+try:
+    import allure
+    ALLURE_AVAILABLE = True
+except ImportError:
+    ALLURE_AVAILABLE = False
+    # Create a mock allure module for when it's not installed
+    class MockAllure:
+        @staticmethod
+        def step(text):
+            def decorator(func):
+                return func
+            return decorator
+        
+        @staticmethod
+        def title(text):
+            def decorator(func):
+                return func
+            return decorator
+        
+        @staticmethod
+        def description(text):
+            def decorator(func):
+                return func
+            return decorator
+        
+        @staticmethod
+        def severity(level):
+            def decorator(func):
+                return func
+            return decorator
+        
+        @staticmethod
+        def tag(*tags):
+            def decorator(func):
+                return func
+            return decorator
+        
+        @staticmethod
+        def feature(feature):
+            def decorator(func):
+                return func
+            return decorator
+        
+        @staticmethod
+        def story(story):
+            def decorator(func):
+                return func
+            return decorator
+        
+        class attachment_type:
+            JSON = "application/json"
+            TEXT = "text/plain"
+        
+        @staticmethod
+        def attach(body, name, attachment_type):
+            pass
+        
+        class Severity:
+            BLOCKER = "blocker"
+            CRITICAL = "critical"
+            NORMAL = "normal"
+            MINOR = "minor"
+            TRIVIAL = "trivial"
+        
+        severity_level = Severity
+    
+    allure = MockAllure()
 
 
 # =============================================================================
@@ -83,6 +160,75 @@ def telegram_service() -> TelegramServiceEnhanced:
 def converter_service() -> ConverterService:
     """Converter service instance."""
     return ConverterService()
+
+
+@pytest.fixture
+def cache_strategy() -> CacheStrategy:
+    """Cache strategy service instance."""
+    return CacheStrategy()
+
+
+@pytest.fixture
+def temp_cache_dir() -> Generator[Path, None, None]:
+    """Temporary directory for disk cache tests."""
+    temp_dir = Path(tempfile.mkdtemp(prefix="test_disk_cache_"))
+    yield temp_dir
+    # Cleanup
+    if temp_dir.exists():
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+@pytest.fixture
+def disk_cache_service(temp_cache_dir: Path) -> DiskCacheService:
+    """Disk cache service instance with temporary directory."""
+    # Override cache directory for testing
+    original_dir = os.environ.get("DISK_CACHE_DIR")
+    os.environ["DISK_CACHE_DIR"] = str(temp_cache_dir)
+    
+    service = DiskCacheService()
+    
+    yield service
+    
+    # Restore original setting
+    if original_dir:
+        os.environ["DISK_CACHE_DIR"] = original_dir
+    elif "DISK_CACHE_DIR" in os.environ:
+        del os.environ["DISK_CACHE_DIR"]
+
+
+@pytest.fixture
+def telegram_queue() -> TelegramRequestQueue:
+    """Telegram request queue instance."""
+    return TelegramRequestQueue(max_concurrent=2, delay_ms=50, adaptive=True)
+
+
+@pytest.fixture
+async def cache_manager(fake_redis_service, temp_cache_dir: Path) -> AsyncGenerator[CacheManager, None]:
+    """Cache manager instance for unit tests."""
+    # Override cache directory for testing
+    original_dir = os.environ.get("DISK_CACHE_DIR")
+    os.environ["DISK_CACHE_DIR"] = str(temp_cache_dir)
+    
+    manager = CacheManager()
+    # Replace Redis service with fake one
+    manager.redis_service = fake_redis_service
+    
+    yield manager
+    
+    # Cleanup
+    await manager.disconnect()
+    
+    # Restore original setting
+    if original_dir:
+        os.environ["DISK_CACHE_DIR"] = original_dir
+    elif "DISK_CACHE_DIR" in os.environ:
+        del os.environ["DISK_CACHE_DIR"]
+
+
+@pytest.fixture
+def rate_limit_middleware(app: FastAPI) -> RateLimitMiddleware:
+    """Rate limit middleware instance for testing."""
+    return RateLimitMiddleware(app, enabled=True)
 
 
 # =============================================================================
@@ -211,4 +357,63 @@ async def cleanup_redis_test_data(redis_service):
 def event_loop_policy():
     """Use the default event loop policy for tests."""
     return asyncio.get_event_loop_policy()
+
+
+# =============================================================================
+# Allure Hooks
+# =============================================================================
+
+@pytest.hookimpl(tryfirst=True, hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Attach test results to Allure."""
+    outcome = yield
+    rep = outcome.get_result()
+    
+    if ALLURE_AVAILABLE and rep.when == "call":
+        if rep.failed:
+            # Attach error details
+            if hasattr(rep, "longrepr") and rep.longrepr:
+                allure.attach(
+                    str(rep.longrepr),
+                    name="Test Failure",
+                    attachment_type=allure.attachment_type.TEXT
+                )
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item):
+    """Log test setup in Allure."""
+    if ALLURE_AVAILABLE:
+        # Attach test configuration
+        config_info = {
+            "test_name": item.name,
+            "test_file": str(item.fspath),
+            "markers": [mark.name for mark in item.iter_markers()],
+        }
+        allure.attach(
+            str(config_info),
+            name="Test Configuration",
+            attachment_type=allure.attachment_type.JSON
+        )
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config):
+    """Configure Allure environment."""
+    if ALLURE_AVAILABLE:
+        # Create allure-results directory if it doesn't exist
+        allure_dir = Path("allure-results")
+        allure_dir.mkdir(exist_ok=True)
+        
+        # Attach environment information
+        env_info = {
+            "python_version": sys.version,
+            "pytest_version": pytest.__version__,
+            "test_path": str(Path.cwd()),
+        }
+        allure.attach(
+            str(env_info),
+            name="Environment",
+            attachment_type=allure.attachment_type.JSON
+        )
 
