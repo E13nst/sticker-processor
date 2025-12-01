@@ -300,21 +300,34 @@ class DiskCacheService:
     
     async def get_cache_stats(self) -> Dict[str, Any]:
         """Get disk cache statistics."""
+        import asyncio
+        
         # Recalculate stats from actual files
         total_files = 0
         total_size_bytes = 0
         file_types = {}
         
-        # Search in subdirectories for each format
-        for file_path in self.cache_dir.rglob("*"):
-            if file_path.is_file() and not file_path.name.endswith('.meta'):
-                total_files += 1
-                total_size_bytes += file_path.stat().st_size
-                
-                # Extract file type from extension
-                file_extension = file_path.suffix.lower().lstrip('.')
-                if file_extension:
-                    file_types[file_extension] = file_types.get(file_extension, 0) + 1
+        # Search in subdirectories for each format - run in thread to avoid blocking
+        def _calculate_stats():
+            nonlocal total_files, total_size_bytes, file_types
+            for file_path in self.cache_dir.rglob("*"):
+                if file_path.is_file() and not file_path.name.endswith('.meta'):
+                    total_files += 1
+                    total_size_bytes += file_path.stat().st_size
+                    
+                    # Extract file type from extension
+                    file_extension = file_path.suffix.lower().lstrip('.')
+                    if file_extension:
+                        file_types[file_extension] = file_types.get(file_extension, 0) + 1
+            return total_files, total_size_bytes, file_types
+        
+        # Run file system operations in thread pool to avoid blocking event loop
+        try:
+            total_files, total_size_bytes, file_types = await asyncio.to_thread(_calculate_stats)
+        except AttributeError:
+            # Fallback for Python < 3.9
+            loop = asyncio.get_event_loop()
+            total_files, total_size_bytes, file_types = await loop.run_in_executor(None, _calculate_stats)
         
         self.stats['total_files'] = total_files
         self.stats['total_size_bytes'] = total_size_bytes

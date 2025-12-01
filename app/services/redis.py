@@ -193,16 +193,29 @@ class RedisService:
             return None
         
         try:
-            # Get all sticker keys
+            import asyncio
+            # Get all sticker keys with timeout to avoid hanging
             pattern = "sticker:file:*"
-            keys = await self.redis.keys(pattern)
+            try:
+                keys = await asyncio.wait_for(
+                    self.redis.keys(pattern),
+                    timeout=3.0  # 3 seconds timeout for keys operation
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Redis keys() operation timed out - too many keys")
+                # Return partial stats or None
+                return None
             
             total_files = len(keys)
             total_size_bytes = 0
             converted_files = 0
             file_types = {}
             
-            for key in keys:
+            # Limit the number of keys to process to avoid timeout
+            max_keys_to_process = 1000
+            keys_to_process = keys[:max_keys_to_process]
+            
+            for key in keys_to_process:
                 try:
                     cached_data = await self.redis.get(key)
                     if cached_data:
@@ -224,11 +237,19 @@ class RedisService:
                 except Exception:
                     continue
             
+            # If we processed fewer keys than total, adjust total_files
+            if len(keys) > max_keys_to_process:
+                logger.warning(f"Processed only {max_keys_to_process} of {len(keys)} keys for stats")
+                # Estimate total size based on processed keys
+                if len(keys_to_process) > 0:
+                    avg_size = total_size_bytes / len(keys_to_process)
+                    total_size_bytes = int(avg_size * len(keys))
+            
             return CacheStats(
-                total_files=total_files,
+                total_files=len(keys),  # Use actual total, not processed count
                 total_size_bytes=total_size_bytes,
                 converted_files=converted_files,
-                original_files=total_files - converted_files,
+                original_files=len(keys) - converted_files,
                 last_updated=datetime.now(),
                 file_types=file_types
             )
