@@ -47,8 +47,16 @@ class TestCacheManager:
         
         with allure.step("Mock Redis get_sticker to return cached entry"):
             # Mock the redis service to return the cache entry
-            from unittest.mock import AsyncMock
+            from unittest.mock import AsyncMock, Mock
+            # Ensure redis_service.redis is not None
+            cache_manager.redis_service.redis = Mock()
             cache_manager.redis_service.get_sticker = AsyncMock(return_value=cache_entry)
+            # Also mock in cache_chain since it holds a reference
+            cache_manager.cache_chain.redis_service.redis = Mock()
+            cache_manager.cache_chain.redis_service.get_sticker = AsyncMock(return_value=cache_entry)
+            # Mock cache strategy to allow caching in Redis
+            cache_manager.cache_strategy.should_cache_in_redis = Mock(return_value=True)
+            cache_manager.cache_chain.cache_strategy.should_cache_in_redis = Mock(return_value=True)
         
         with allure.step("Retrieve sticker from cache"):
             result = await cache_manager.get_sticker(file_id)
@@ -134,10 +142,16 @@ class TestCacheManager:
         
         with allure.step("Mock all cache levels to miss, then Telegram to return data"):
             from unittest.mock import AsyncMock, Mock
+            # Ensure redis_service.redis is not None for Redis check
+            cache_manager.redis_service.redis = Mock()
+            # Also mock in cache_chain
+            cache_manager.cache_chain.redis_service.redis = Mock()
             # Redis miss
             cache_manager.redis_service.get_sticker = AsyncMock(return_value=None)
-            # Disk miss
+            cache_manager.cache_chain.redis_service.get_sticker = AsyncMock(return_value=None)
+            # Disk miss - mock the disk cache service
             cache_manager.disk_cache_service.get_file = AsyncMock(return_value=None)
+            cache_manager.cache_chain.disk_cache_service.get_file = AsyncMock(return_value=None)
             # Telegram API returns data
             cache_manager.telegram_service.get_file_info = AsyncMock(return_value={
                 'file_path': 'stickers/test.webp',
@@ -145,6 +159,10 @@ class TestCacheManager:
             })
             cache_manager.telegram_service.download_file = AsyncMock(return_value=b"webp_content")
             cache_manager.telegram_service.detect_file_format = Mock(return_value='webp')
+            cache_manager.telegram_service.get_mime_type = Mock(return_value='image/webp')
+            # Mock cache strategy
+            cache_manager.cache_strategy.should_cache_in_redis = Mock(return_value=True)
+            cache_manager.cache_chain.cache_strategy.should_cache_in_redis = Mock(return_value=True)
         
         with allure.step("Get sticker (should fetch from Telegram)"):
             result = await cache_manager.get_sticker(file_id)

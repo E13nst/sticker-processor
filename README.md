@@ -139,7 +139,7 @@ venv/bin/pytest -v -m critical -s
 - **fakeredis** - Redis mocking for unit tests
 - **pytest-cov** - Code coverage reports
 
-See [TESTING_QUICK_START.md](TESTING_QUICK_START.md) for detailed testing guide.
+See [tests/README.md](tests/README.md) for detailed testing guide.
 
 ### Using Makefile
 
@@ -173,6 +173,8 @@ The service is designed to be deployed separately from the main Spring Boot appl
 4. Set up Redis instance
 5. Update main application to proxy requests to this service
 
+See [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md) for detailed deployment instructions.
+
 ## Monitoring
 
 - **Health check**: `GET /health`
@@ -185,4 +187,11 @@ The service is designed to be deployed separately from the main Spring Boot appl
   - API request/response times
   - Error classification and tracking
 
-See `TELEGRAM_API_LOGGING.md` for details on logging capabilities.
+See [TELEGRAM_API_LOGGING.md](TELEGRAM_API_LOGGING.md) for details on logging capabilities.
+
+## Additional Documentation
+
+- [PERFORMANCE_OPTIMIZATION_GUIDE.md](PERFORMANCE_OPTIMIZATION_GUIDE.md) - Performance tuning and optimization guide
+- [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md) - Production deployment instructions
+- [TELEGRAM_API_LOGGING.md](TELEGRAM_API_LOGGING.md) - Telegram API logging configuration
+- [tests/README.md](tests/README.md) - Comprehensive testing documentation
