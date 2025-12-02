@@ -110,7 +110,11 @@ class ConverterService:
         try:
             # Run CPU-intensive decompression in process pool if available, otherwise sync
             if self.process_pool:
-                loop = asyncio.get_event_loop()
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    # Fallback if no running loop (shouldn't happen in async context)
+                    loop = asyncio.get_event_loop()
                 result = await loop.run_in_executor(
                     self.process_pool,
                     self._convert_gzip_sync,
@@ -156,10 +160,11 @@ class ConverterService:
                     
             finally:
                 # Clean up temporary file
-                try:
-                    os.unlink(tgs_path)
-                except OSError:
-                    pass
+                if 'tgs_path' in locals() and os.path.exists(tgs_path):
+                    try:
+                        os.unlink(tgs_path)
+                    except OSError:
+                        pass
                     
         except Exception as e:
             logger.error(f"lottie library conversion failed: {e}")
@@ -202,12 +207,14 @@ class ConverterService:
                     
             finally:
                 # Clean up temporary files
-                for path in [tgs_path, json_path]:
-                    try:
-                        if os.path.exists(path):
-                            os.unlink(path)
-                    except OSError:
-                        pass
+                for path_var in ['tgs_path', 'json_path']:
+                    if path_var in locals():
+                        path = locals()[path_var]
+                        if path and os.path.exists(path):
+                            try:
+                                os.unlink(path)
+                            except OSError:
+                                pass
                         
         except asyncio.TimeoutError:
             logger.error("tgs2json conversion timed out")

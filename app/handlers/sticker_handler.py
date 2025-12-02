@@ -197,6 +197,14 @@ class StickerHandler:
             try:
                 combined_image = combine_images(images, tile_size)
                 webp_bytes = image_to_webp(combined_image)
+                
+                # Сохранить количество изображений для заголовков
+                images_count = len(images)
+                
+                # Освободить память PIL Images после завершения всех операций
+                # Удаляем ссылки, но не закрываем явно, чтобы избежать проблем с внутренними ссылками
+                del images
+                del combined_image
             except Exception as e:
                 logger.error(f"Failed to combine images: {e}")
                 raise HTTPException(
@@ -209,14 +217,14 @@ class StickerHandler:
             # Prepare response headers
             headers = {
                 "X-Processing-Time-Ms": str(processing_time),
-                "X-Images-Combined": str(len(images)),
+                "X-Images-Combined": str(images_count),
                 "X-Images-Failed": str(failed_count),
                 "X-Tile-Size": str(tile_size),
                 "Cache-Control": "no-cache"
             }
             
             logger.info(
-                f"Successfully combined {len(images)} images in {processing_time}ms"
+                f"Successfully combined {images_count} images in {processing_time}ms"
             )
             
             return StreamingResponse(
@@ -392,6 +400,14 @@ class StickerHandler:
             try:
                 combined_image = combine_images(images, tile_size)
                 webp_bytes = image_to_webp(combined_image)
+                
+                # Сохранить количество изображений для заголовков
+                images_count = len(images)
+                
+                # Освободить память PIL Images после завершения всех операций
+                # Удаляем ссылки, но не закрываем явно, чтобы избежать проблем с внутренними ссылками
+                del images
+                del combined_image
             except Exception as e:
                 logger.error(f"Failed to combine images: {e}")
                 raise HTTPException(
@@ -404,7 +420,7 @@ class StickerHandler:
             # Prepare response headers
             headers = {
                 "X-Processing-Time-Ms": str(processing_time),
-                "X-Images-Combined": str(len(images)),
+                "X-Images-Combined": str(images_count),
                 "X-Images-Failed": str(failed_count),
                 "X-Tile-Size": str(tile_size),
                 "X-Sticker-Set-Name": name,
@@ -413,7 +429,7 @@ class StickerHandler:
             }
             
             logger.info(
-                f"Successfully combined {len(images)} images from sticker set {name} "
+                f"Successfully combined {images_count} images from sticker set {name} "
                 f"in {processing_time}ms"
             )
             

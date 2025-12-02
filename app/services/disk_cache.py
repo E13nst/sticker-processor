@@ -326,7 +326,11 @@ class DiskCacheService:
             total_files, total_size_bytes, file_types = await asyncio.to_thread(_calculate_stats)
         except AttributeError:
             # Fallback for Python < 3.9
-            loop = asyncio.get_event_loop()
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # Fallback if no running loop (shouldn't happen in async context)
+                loop = asyncio.get_event_loop()
             total_files, total_size_bytes, file_types = await loop.run_in_executor(None, _calculate_stats)
         
         self.stats['total_files'] = total_files

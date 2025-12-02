@@ -146,6 +146,19 @@ class TelegramServiceEnhanced:
         if error_type not in self.stats['errors_by_type']:
             self.stats['errors_by_type'][error_type] = 0
         self.stats['errors_by_type'][error_type] += 1
+        
+        # Ограничить размер словаря ошибок (максимум 50 типов)
+        MAX_ERROR_TYPES = 50
+        if len(self.stats['errors_by_type']) > MAX_ERROR_TYPES:
+            # Удалить наименее частые ошибки
+            sorted_errors = sorted(
+                self.stats['errors_by_type'].items(), 
+                key=lambda x: x[1]
+            )
+            # Удалить наименее частые до достижения лимита
+            to_remove = len(sorted_errors) - MAX_ERROR_TYPES
+            for error_type_to_remove, _ in sorted_errors[:to_remove]:
+                del self.stats['errors_by_type'][error_type_to_remove]
     
     def get_statistics(self) -> Dict[str, Any]:
         """Get current API statistics."""

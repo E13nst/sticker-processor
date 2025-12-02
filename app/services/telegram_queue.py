@@ -21,13 +21,27 @@ def get_global_queue(max_concurrent: int = 5, delay_ms: int = 150, adaptive: boo
     """
     global _global_queue_instance
     
-    if _global_queue_instance is None:
-        _global_queue_instance = TelegramRequestQueue(
-            max_concurrent=max_concurrent,
-            delay_ms=delay_ms,
-            adaptive=adaptive
-        )
-        logger.info("Created global TelegramRequestQueue singleton")
+    # Check if existing queue is still valid (event loop not closed)
+    if _global_queue_instance is not None:
+        try:
+            # Try to check if event loop is still running
+            loop = asyncio.get_running_loop()
+            if not loop.is_closed() and _global_queue_instance._running:
+                return _global_queue_instance
+        except RuntimeError:
+            # Event loop is closed or not running, reset queue
+            pass
+        # Reset queue if event loop is closed or queue is not running
+        logger.warning("Resetting global queue (event loop closed or queue stopped)")
+        _global_queue_instance = None
+    
+    # Create new queue instance
+    _global_queue_instance = TelegramRequestQueue(
+        max_concurrent=max_concurrent,
+        delay_ms=delay_ms,
+        adaptive=adaptive
+    )
+    logger.info("Created global TelegramRequestQueue singleton")
     
     return _global_queue_instance
 
@@ -79,8 +93,18 @@ class TelegramRequestQueue:
     def _start_processor(self):
         """Start background task to process queue."""
         if not self._running:
-            self._running = True
-            self._processor_task = asyncio.create_task(self._process_queue())
+            try:
+                # Check if event loop is running and not closed
+                loop = asyncio.get_running_loop()
+                if loop.is_closed():
+                    logger.warning("Cannot start processor: event loop is closed")
+                    return
+                self._running = True
+                self._processor_task = asyncio.create_task(self._process_queue())
+            except RuntimeError:
+                # No running event loop
+                logger.warning("Cannot start processor: no running event loop")
+                return
     
     async def _process_queue(self):
         """Process queued requests one by one with rate limiting."""
@@ -185,9 +209,28 @@ class TelegramRequestQueue:
         Returns:
             Result of function execution
         """
+        # Check if event loop is still running
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_closed():
+                # Event loop is closed, execute directly without queue
+                logger.warning("Event loop closed, executing function directly without queue")
+                return await func(*args, **kwargs)
+        except RuntimeError as e:
+            if "Event loop is closed" in str(e) or "no running event loop" in str(e):
+                # Event loop is closed, execute directly without queue
+                logger.warning("Event loop closed, executing function directly without queue")
+                return await func(*args, **kwargs)
+            raise
+        
         # Start processor if not running
         if not self._running:
             self._start_processor()
+            # If processor didn't start, execute directly
+            if not self._running:
+                # Fallback: execute directly without queue
+                logger.warning("Processor not started, executing function directly without queue")
+                return await func(*args, **kwargs)
         
         # Create future for result
         future = asyncio.Future()
