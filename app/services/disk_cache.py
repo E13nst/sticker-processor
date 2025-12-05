@@ -308,53 +308,81 @@ class DiskCacheService:
         total_size_bytes = 0
         file_types = defaultdict(int)
         
-        # Optimized: scan only known format directories instead of everything
+        # Limit the number of files to process to avoid timeout (similar to Redis)
+        max_files_to_process = 2000
+        
+        # Optimized: scan only known format directories using os.scandir (faster than iterdir)
         def _calculate_stats():
             nonlocal total_files, total_size_bytes, file_types
             
             # Known formats from cache structure
             known_formats = ['lottie', 'webp', 'tgs', 'png', 'jpg', 'jpeg', 'webm']
             
-            # First, try to scan only format subdirectories (faster)
+            files_processed = 0
             format_dirs_found = False
+            
+            # Process files directly (single pass) - stop when we hit the limit
+            # This is much faster than counting all files first
             for format_name in known_formats:
+                if files_processed >= max_files_to_process:
+                    break
+                    
                 format_dir = self.cache_dir / format_name
                 if format_dir.exists() and format_dir.is_dir():
                     format_dirs_found = True
                     try:
-                        for file_path in format_dir.iterdir():
-                            if file_path.is_file() and not file_path.name.endswith('.meta'):
-                                total_files += 1
-                                try:
-                                    total_size_bytes += file_path.stat().st_size
-                                except (OSError, FileNotFoundError):
-                                    # File might have been deleted
-                                    continue
-                                
-                                # Extract file type from extension
-                                file_extension = file_path.suffix.lower().lstrip('.')
-                                if file_extension:
-                                    file_types[file_extension] += 1
+                        # Use os.scandir for better performance
+                        with os.scandir(format_dir) as entries:
+                            for entry in entries:
+                                if files_processed >= max_files_to_process:
+                                    break
+                                    
+                                if entry.is_file() and not entry.name.endswith('.meta'):
+                                    total_files += 1
+                                    files_processed += 1
+                                    try:
+                                        # Use entry.stat() which is faster than Path.stat()
+                                        stat_info = entry.stat()
+                                        total_size_bytes += stat_info.st_size
+                                    except (OSError, FileNotFoundError):
+                                        # File might have been deleted
+                                        continue
+                                    
+                                    # Extract file type from extension
+                                    file_extension = Path(entry.name).suffix.lower().lstrip('.')
+                                    if file_extension:
+                                        file_types[file_extension] += 1
                     except (OSError, PermissionError) as e:
                         logger.warning(f"Error scanning format directory {format_name}: {e}")
                         continue
             
             # Fallback: if no format directories found, scan root (backward compatibility)
-            if not format_dirs_found:
+            if not format_dirs_found and files_processed < max_files_to_process:
                 try:
-                    for file_path in self.cache_dir.iterdir():
-                        if file_path.is_file() and not file_path.name.endswith('.meta'):
-                            total_files += 1
-                            try:
-                                total_size_bytes += file_path.stat().st_size
-                            except (OSError, FileNotFoundError):
-                                continue
-                            
-                            file_extension = file_path.suffix.lower().lstrip('.')
-                            if file_extension:
-                                file_types[file_extension] += 1
+                    # Use os.scandir for better performance
+                    with os.scandir(self.cache_dir) as entries:
+                        for entry in entries:
+                            if files_processed >= max_files_to_process:
+                                break
+                                
+                            if entry.is_file() and not entry.name.endswith('.meta'):
+                                total_files += 1
+                                files_processed += 1
+                                try:
+                                    stat_info = entry.stat()
+                                    total_size_bytes += stat_info.st_size
+                                except (OSError, FileNotFoundError):
+                                    continue
+                                
+                                file_extension = Path(entry.name).suffix.lower().lstrip('.')
+                                if file_extension:
+                                    file_types[file_extension] += 1
                 except (OSError, PermissionError) as e:
                     logger.warning(f"Error scanning cache directory: {e}")
+            
+            # If we hit the limit, log a warning
+            if files_processed >= max_files_to_process:
+                logger.warning(f"Processed only {max_files_to_process} files for disk cache stats (may be incomplete)")
             
             return total_files, total_size_bytes, dict(file_types)
         
