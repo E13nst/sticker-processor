@@ -3,6 +3,7 @@ import hashlib
 import shutil
 import asyncio
 import logging
+from collections import defaultdict
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime, timedelta
@@ -305,21 +306,57 @@ class DiskCacheService:
         # Recalculate stats from actual files
         total_files = 0
         total_size_bytes = 0
-        file_types = {}
+        file_types = defaultdict(int)
         
-        # Search in subdirectories for each format - run in thread to avoid blocking
+        # Optimized: scan only known format directories instead of everything
         def _calculate_stats():
             nonlocal total_files, total_size_bytes, file_types
-            for file_path in self.cache_dir.rglob("*"):
-                if file_path.is_file() and not file_path.name.endswith('.meta'):
-                    total_files += 1
-                    total_size_bytes += file_path.stat().st_size
-                    
-                    # Extract file type from extension
-                    file_extension = file_path.suffix.lower().lstrip('.')
-                    if file_extension:
-                        file_types[file_extension] = file_types.get(file_extension, 0) + 1
-            return total_files, total_size_bytes, file_types
+            
+            # Known formats from cache structure
+            known_formats = ['lottie', 'webp', 'tgs', 'png', 'jpg', 'jpeg', 'webm']
+            
+            # First, try to scan only format subdirectories (faster)
+            format_dirs_found = False
+            for format_name in known_formats:
+                format_dir = self.cache_dir / format_name
+                if format_dir.exists() and format_dir.is_dir():
+                    format_dirs_found = True
+                    try:
+                        for file_path in format_dir.iterdir():
+                            if file_path.is_file() and not file_path.name.endswith('.meta'):
+                                total_files += 1
+                                try:
+                                    total_size_bytes += file_path.stat().st_size
+                                except (OSError, FileNotFoundError):
+                                    # File might have been deleted
+                                    continue
+                                
+                                # Extract file type from extension
+                                file_extension = file_path.suffix.lower().lstrip('.')
+                                if file_extension:
+                                    file_types[file_extension] += 1
+                    except (OSError, PermissionError) as e:
+                        logger.warning(f"Error scanning format directory {format_name}: {e}")
+                        continue
+            
+            # Fallback: if no format directories found, scan root (backward compatibility)
+            if not format_dirs_found:
+                try:
+                    for file_path in self.cache_dir.iterdir():
+                        if file_path.is_file() and not file_path.name.endswith('.meta'):
+                            total_files += 1
+                            try:
+                                total_size_bytes += file_path.stat().st_size
+                            except (OSError, FileNotFoundError):
+                                continue
+                            
+                            file_extension = file_path.suffix.lower().lstrip('.')
+                            if file_extension:
+                                file_types[file_extension] += 1
+                except (OSError, PermissionError) as e:
+                    logger.warning(f"Error scanning cache directory: {e}")
+            
+            return total_files, total_size_bytes, dict(file_types)
         
         # Run file system operations in thread pool to avoid blocking event loop
         try:
