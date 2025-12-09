@@ -15,6 +15,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Check OpenAI API key configuration
+if not settings.openai_api_key:
+    logger.warning(
+        "OPENAI_API_KEY is not configured. "
+        "The /stickers/generate endpoint will not be available. "
+        "Please set OPENAI_API_KEY in environment variables to enable sticker generation."
+    )
+
 # Initialize cache manager
 cache_manager = CacheManager()
 
