@@ -18,7 +18,18 @@ class OpenAIService:
         """Initialize OpenAI client with API key from settings."""
         if not settings.openai_api_key:
             raise ValueError("OPENAI_API_KEY is not configured. Please set it in environment variables.")
-        self.client = OpenAI(api_key=settings.openai_api_key)
+        try:
+            # Initialize client with only api_key to avoid issues with proxies parameter
+            # httpx 0.28+ removed proxies parameter, so we explicitly pass only api_key
+            self.client = OpenAI(api_key=settings.openai_api_key)
+        except TypeError as e:
+            if "proxies" in str(e):
+                logger.error(
+                    "OpenAI client initialization failed due to proxies parameter. "
+                    "This may be caused by incompatible httpx version. "
+                    "Please ensure httpx==0.27.2 is installed."
+                )
+            raise ValueError(f"Failed to initialize OpenAI client: {str(e)}") from e
     
     def generate_sticker(
         self,
