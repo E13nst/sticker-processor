@@ -11,8 +11,6 @@ class Settings(BaseSettings):
     
     # OpenAI Configuration
     openai_api_key: Optional[str] = None
-    openai_image_model: str = "gpt-image-1"  # Model to use: "gpt-image-1" or "dall-e-3"
-    openai_fallback_model: str = "dall-e-3"  # Fallback model if primary fails
     
     # Redis Configuration
     redis_enabled: bool = True  # Enable/disable Redis cache entirely

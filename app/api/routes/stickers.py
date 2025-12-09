@@ -153,29 +153,32 @@ def create_sticker_router(cache_manager: CacheManager) -> APIRouter:
         response_class=StreamingResponse,
         summary="Generate Sticker",
         description="""
-        Generate a Telegram sticker image using OpenAI API (model: gpt-image-1) based on a text prompt.
+        Generate a Telegram sticker image using OpenAI API based on a text prompt.
         
         **Features:**
         - Generates WebP images with transparent background
+        - Configurable OpenAI model (default: dall-e-3)
         - Configurable image size
         - Automatic scaling for Telegram sticker format (512x512)
         - Optimized for Telegram sticker format
         
         **Parameters:**
         - `prompt`: Text description of the sticker to generate (required)
+        - `model`: OpenAI model name (default: "dall-e-3"). Can be "dall-e-3", "dall-e-2", or other supported models
         - `quality`: Deprecated - kept for backward compatibility, but not used by API
         - `size`: Image size (default: "512x512")
         
         **Supported Sizes:**
         - `"512x512"` - Telegram sticker size (generated at 1024x1024, then scaled down)
-        - `"1024x1024"` - Square high resolution
-        - `"1024x1536"` - Portrait orientation
-        - `"1536x1024"` - Landscape orientation
-        - `"auto"` - Let OpenAI choose the best size
+        - `"1024x1024"` - Square high resolution (DALL-E 3)
+        - `"1792x1024"` - Landscape orientation (DALL-E 3)
+        - `"1024x1792"` - Portrait orientation (DALL-E 3)
+        - Other sizes supported by the selected model
         
         **Note:** 
-        - The `quality` parameter is accepted but ignored by the API. Model gpt-image-1 doesn't support quality parameter.
+        - The `quality` parameter is accepted but ignored by the API.
         - Size `512x512` is automatically generated at `1024x1024` and scaled down to maintain quality.
+        - DALL-E 3 supports transparent background natively.
         
         **Response:**
         - Returns WebP image with transparent background

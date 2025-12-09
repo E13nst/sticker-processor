@@ -535,6 +535,7 @@ class StickerHandler:
                 None,
                 openai_service.generate_sticker,
                 request.prompt,
+                request.model,
                 request.quality,
                 request.size
             )

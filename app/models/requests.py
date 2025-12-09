@@ -117,7 +117,8 @@ class GenerateStickerRequest(BaseModel):
     """Request model for generating a sticker using OpenAI."""
     
     prompt: str = Field(..., min_length=1, max_length=1000, description="Text prompt for sticker generation")
-    quality: str = Field(default="high", description="Image quality: 'high' or 'standard' (default: 'high')")
+    model: str = Field(default="dall-e-3", description="OpenAI image generation model (default: 'dall-e-3')")
+    quality: str = Field(default="high", description="Image quality: 'high' or 'standard' (default: 'high') - deprecated, not used")
     size: str = Field(default="512x512", description="Image size in format 'WIDTHxHEIGHT' (default: '512x512')")
     
     @field_validator('prompt')
@@ -128,10 +129,23 @@ class GenerateStickerRequest(BaseModel):
             raise ValueError("Prompt cannot be empty")
         return v.strip()
     
+    @field_validator('model')
+    @classmethod
+    def validate_model(cls, v):
+        """Validate model name."""
+        if not v or not v.strip():
+            raise ValueError("Model cannot be empty")
+        # Allow any model name, but log common ones
+        common_models = ['dall-e-3', 'dall-e-2', 'gpt-image-1']
+        if v not in common_models:
+            import warnings
+            warnings.warn(f"Model '{v}' is not a commonly used OpenAI image model. Using as-is.")
+        return v.strip()
+    
     @field_validator('quality')
     @classmethod
     def validate_quality(cls, v):
-        """Validate quality value."""
+        """Validate quality value (deprecated, kept for backward compatibility)."""
         if v not in ["high", "standard"]:
             raise ValueError("quality must be one of: 'high', 'standard'")
         return v
@@ -143,28 +157,24 @@ class GenerateStickerRequest(BaseModel):
         if not v:
             raise ValueError("Size cannot be empty")
         
-        # Supported sizes for gpt-image-1 model
-        supported_sizes = ['1024x1024', '1024x1536', '1536x1024', 'auto', '512x512']
-        
-        # Allow 512x512 for backward compatibility (will be scaled from 1024x1024)
+        # DALL-E 3 supported sizes: 1024x1024, 1792x1024, 1024x1792
+        # For 512x512, we'll generate at 1024x1024 and scale down
         if v == '512x512':
-            return v
-        
-        # Check if it's a supported size
-        if v in supported_sizes:
             return v
         
         # Validate format: WIDTHxHEIGHT
         pattern = r'^\d+x\d+$'
         if not re.match(pattern, v):
-            raise ValueError(
-                f"Size must be one of: {', '.join(supported_sizes)} or '512x512'. "
-                f"Got: {v}"
-            )
+            raise ValueError("Size must be in format 'WIDTHxHEIGHT' (e.g., '1024x1024')")
         
-        # If it's a custom size, validate it's one of the supported ones
-        raise ValueError(
-            f"Size '{v}' is not supported. "
-            f"Supported sizes for gpt-image-1: {', '.join(supported_sizes)} or '512x512'"
-        )
+        # Extract dimensions
+        parts = v.split('x')
+        width = int(parts[0])
+        height = int(parts[1])
+        
+        # Validate dimensions are reasonable
+        if width < 256 or width > 2048 or height < 256 or height > 2048:
+            raise ValueError("Size dimensions must be between 256 and 2048 pixels")
+        
+        return v
 
