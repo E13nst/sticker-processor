@@ -54,15 +54,38 @@ class OpenAIService:
             OpenAIAPIError: If OpenAI API call fails
             ValueError: If response data is invalid
         """
+        request_params = {}
         try:
-            response = self.client.images.generate(
-                model="gpt-image-1",
-                prompt=prompt,
-                size=size,
-                output_format="webp",
-                background="transparent",
-                quality=quality,
-                user=user
+            # Prepare request parameters - build step by step to log what we're sending
+            request_params["model"] = "gpt-image-1"
+            request_params["prompt"] = prompt
+            request_params["size"] = size
+            request_params["quality"] = quality
+            request_params["response_format"] = "b64_json"
+            request_params["n"] = 1
+            
+            # Add optional parameters
+            if user:
+                request_params["user"] = user
+            
+            # Log the exact request being sent to OpenAI
+            logger.info(
+                f"OpenAI API request - calling images.generate() with parameters: "
+                f"model={request_params.get('model')}, "
+                f"prompt='{prompt[:100]}{'...' if len(prompt) > 100 else ''}', "
+                f"size={size}, quality={quality}, "
+                f"response_format={request_params.get('response_format')}, "
+                f"n={request_params.get('n')}, "
+                f"user={user if user else 'None'}, "
+                f"all_params={request_params}"
+            )
+            
+            # Call OpenAI API with the prepared parameters
+            response = self.client.images.generate(**request_params)
+            
+            logger.debug(
+                f"OpenAI API response received: "
+                f"status=success, images_count={len(response.data) if response.data else 0}"
             )
             
             if not response.data or len(response.data) == 0:
@@ -73,14 +96,31 @@ class OpenAIService:
                 raise ValueError("OpenAI API response missing b64_json data")
             
             image_bytes = base64.b64decode(image_b64)
-            logger.info(f"Successfully generated sticker image: {len(image_bytes)} bytes")
+            logger.info(
+                f"Successfully generated sticker image: "
+                f"size={len(image_bytes)} bytes, "
+                f"format=webp (decoded from base64)"
+            )
             
             return image_bytes
             
         except OpenAIAPIError as e:
-            logger.error(f"OpenAI API error: {e}")
+            logger.error(
+                f"OpenAI API error: {type(e).__name__}: {e}, "
+                f"request_params={request_params}"
+            )
             raise
+        except TypeError as e:
+            logger.error(
+                f"OpenAI API TypeError: {type(e).__name__}: {e}, "
+                f"request_params={request_params}, "
+                f"this usually means an unsupported parameter was passed"
+            )
+            raise ValueError(f"Invalid API parameters: {str(e)}") from e
         except Exception as e:
-            logger.error(f"Error generating sticker: {e}")
+            logger.error(
+                f"Error generating sticker: {type(e).__name__}: {e}, "
+                f"request_params={request_params}"
+            )
             raise ValueError(f"Failed to generate sticker: {str(e)}") from e
 
