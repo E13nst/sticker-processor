@@ -156,7 +156,7 @@ def create_sticker_router(cache_manager: CacheManager) -> APIRouter:
         Generate a Telegram sticker image using OpenAI API based on a text prompt.
         
         **Features:**
-        - Generates WebP images with transparent background
+        - Generates WebP images optimized for Telegram stickers
         - Configurable OpenAI model (default: dall-e-3)
         - Configurable image size
         - Automatic scaling for Telegram sticker format (512x512)
@@ -178,10 +178,10 @@ def create_sticker_router(cache_manager: CacheManager) -> APIRouter:
         **Note:** 
         - The `quality` parameter is accepted but ignored by the API.
         - Size `512x512` is automatically generated at `1024x1024` and scaled down to maintain quality.
-        - DALL-E 3 supports transparent background natively.
+        - DALL-E 3/2 don't support transparent background natively - images are generated with solid backgrounds.
         
         **Response:**
-        - Returns WebP image with transparent background
+        - Returns WebP image (transparency handled in post-processing if needed)
         - Headers include processing time and image size
         """,
         tags=["Stickers"],

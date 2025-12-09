@@ -86,10 +86,11 @@ class OpenAIService:
             }
             
             # Add model-specific parameters
-            # DALL-E 3 supports response_format and background
-            if model == "dall-e-3":
+            # DALL-E 3 supports response_format (but not background parameter)
+            # Note: DALL-E 3/2 don't support transparent background natively
+            # Transparency will be handled in post-processing if needed
+            if model == "dall-e-3" or model == "dall-e-2":
                 request_params["response_format"] = "b64_json"
-                request_params["background"] = "transparent"
             # For other models, try to use response_format if supported
             else:
                 try:
