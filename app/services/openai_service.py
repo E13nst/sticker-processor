@@ -1,9 +1,11 @@
 """OpenAI service for generating sticker images."""
 import base64
 import logging
+from io import BytesIO
 from typing import Optional
 
 import requests
+from PIL import Image
 from openai import OpenAI
 from openai import APIError as OpenAIAPIError
 
@@ -59,9 +61,27 @@ class OpenAIService:
         try:
             # Prepare request parameters for gpt-image-1 model
             # Note: gpt-image-1 doesn't support response_format or quality parameters
+            # Supported sizes: '1024x1024', '1024x1536', '1536x1024', 'auto'
+            # If 512x512 is requested, we'll generate 1024x1024 and scale down
+            requested_size = size
+            api_size = size
+            needs_scaling = False
+            target_width = None
+            target_height = None
+            
+            if size == "512x512":
+                # Generate at 1024x1024 and scale down to 512x512
+                api_size = "1024x1024"
+                needs_scaling = True
+                target_width = 512
+                target_height = 512
+                logger.info(
+                    f"Size 512x512 requested - will generate at 1024x1024 and scale down to 512x512"
+                )
+            
             request_params["model"] = "gpt-image-1"
             request_params["prompt"] = prompt
-            request_params["size"] = size
+            request_params["size"] = api_size
             request_params["n"] = 1
             
             # Add optional parameters
@@ -73,7 +93,8 @@ class OpenAIService:
                 f"OpenAI API request - calling images.generate() with parameters: "
                 f"model={request_params.get('model')}, "
                 f"prompt='{prompt[:100]}{'...' if len(prompt) > 100 else ''}', "
-                f"size={size}, "
+                f"requested_size={requested_size}, api_size={api_size}, "
+                f"needs_scaling={needs_scaling}, "
                 f"n={request_params.get('n')}, "
                 f"user={user if user else 'None'}, "
                 f"all_params={request_params}"
@@ -119,6 +140,44 @@ class OpenAIService:
                     f"OpenAI API response format not recognized. "
                     f"Available attributes: {dir(image_data)}"
                 )
+            
+            # Scale down image if needed (e.g., 512x512 from 1024x1024)
+            if needs_scaling and target_width and target_height:
+                logger.info(
+                    f"Scaling image from {api_size} to {target_width}x{target_height}"
+                )
+                try:
+                    # Open image from bytes
+                    img = Image.open(BytesIO(image_bytes))
+                    
+                    # Convert to RGBA if needed (for transparency support)
+                    if img.mode != 'RGBA':
+                        img = img.convert('RGBA')
+                    
+                    # Resize using high-quality Lanczos resampling
+                    img_resized = img.resize(
+                        (target_width, target_height),
+                        Image.Resampling.LANCZOS
+                    )
+                    
+                    # Save back to WebP format with transparency
+                    output = BytesIO()
+                    img_resized.save(
+                        output,
+                        format='WEBP',
+                        method=6,  # Best quality
+                        lossless=False
+                    )
+                    image_bytes = output.getvalue()
+                    
+                    logger.info(
+                        f"Successfully scaled image: "
+                        f"original={api_size}, scaled={target_width}x{target_height}, "
+                        f"final_size={len(image_bytes)} bytes"
+                    )
+                except Exception as e:
+                    logger.error(f"Error scaling image: {e}")
+                    raise ValueError(f"Failed to scale image: {str(e)}") from e
             
             return image_bytes
             

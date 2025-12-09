@@ -142,16 +142,29 @@ class GenerateStickerRequest(BaseModel):
         """Validate size format."""
         if not v:
             raise ValueError("Size cannot be empty")
-        # Validate format: WIDTHxHEIGHT (e.g., "512x512", "1024x1024")
+        
+        # Supported sizes for gpt-image-1 model
+        supported_sizes = ['1024x1024', '1024x1536', '1536x1024', 'auto', '512x512']
+        
+        # Allow 512x512 for backward compatibility (will be scaled from 1024x1024)
+        if v == '512x512':
+            return v
+        
+        # Check if it's a supported size
+        if v in supported_sizes:
+            return v
+        
+        # Validate format: WIDTHxHEIGHT
         pattern = r'^\d+x\d+$'
         if not re.match(pattern, v):
-            raise ValueError("Size must be in format 'WIDTHxHEIGHT' (e.g., '512x512')")
-        # Extract dimensions
-        parts = v.split('x')
-        width = int(parts[0])
-        height = int(parts[1])
-        # Validate dimensions are reasonable
-        if width < 256 or width > 2048 or height < 256 or height > 2048:
-            raise ValueError("Size dimensions must be between 256 and 2048 pixels")
-        return v
+            raise ValueError(
+                f"Size must be one of: {', '.join(supported_sizes)} or '512x512'. "
+                f"Got: {v}"
+            )
+        
+        # If it's a custom size, validate it's one of the supported ones
+        raise ValueError(
+            f"Size '{v}' is not supported. "
+            f"Supported sizes for gpt-image-1: {', '.join(supported_sizes)} or '512x512'"
+        )
 

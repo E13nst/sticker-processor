@@ -157,16 +157,25 @@ def create_sticker_router(cache_manager: CacheManager) -> APIRouter:
         
         **Features:**
         - Generates WebP images with transparent background
-        - Configurable image size (e.g., 512x512, 1024x1024)
+        - Configurable image size
+        - Automatic scaling for Telegram sticker format (512x512)
         - Optimized for Telegram sticker format
         
         **Parameters:**
         - `prompt`: Text description of the sticker to generate (required)
         - `quality`: Deprecated - kept for backward compatibility, but not used by API
-        - `size`: Image dimensions in format "WIDTHxHEIGHT" (default: "512x512")
+        - `size`: Image size (default: "512x512")
         
-        **Note:** The `quality` parameter is accepted but ignored by the API. 
-        Model gpt-image-1 doesn't support quality parameter.
+        **Supported Sizes:**
+        - `"512x512"` - Telegram sticker size (generated at 1024x1024, then scaled down)
+        - `"1024x1024"` - Square high resolution
+        - `"1024x1536"` - Portrait orientation
+        - `"1536x1024"` - Landscape orientation
+        - `"auto"` - Let OpenAI choose the best size
+        
+        **Note:** 
+        - The `quality` parameter is accepted but ignored by the API. Model gpt-image-1 doesn't support quality parameter.
+        - Size `512x512` is automatically generated at `1024x1024` and scaled down to maintain quality.
         
         **Response:**
         - Returns WebP image with transparent background
