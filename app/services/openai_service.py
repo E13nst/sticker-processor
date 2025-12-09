@@ -3,6 +3,7 @@ import base64
 import logging
 from typing import Optional
 
+import requests
 from openai import OpenAI
 from openai import APIError as OpenAIAPIError
 
@@ -56,12 +57,11 @@ class OpenAIService:
         """
         request_params = {}
         try:
-            # Prepare request parameters - build step by step to log what we're sending
+            # Prepare request parameters for gpt-image-1 model
+            # Note: gpt-image-1 doesn't support response_format or quality parameters
             request_params["model"] = "gpt-image-1"
             request_params["prompt"] = prompt
             request_params["size"] = size
-            request_params["quality"] = quality
-            request_params["response_format"] = "b64_json"
             request_params["n"] = 1
             
             # Add optional parameters
@@ -73,8 +73,7 @@ class OpenAIService:
                 f"OpenAI API request - calling images.generate() with parameters: "
                 f"model={request_params.get('model')}, "
                 f"prompt='{prompt[:100]}{'...' if len(prompt) > 100 else ''}', "
-                f"size={size}, quality={quality}, "
-                f"response_format={request_params.get('response_format')}, "
+                f"size={size}, "
                 f"n={request_params.get('n')}, "
                 f"user={user if user else 'None'}, "
                 f"all_params={request_params}"
@@ -85,22 +84,41 @@ class OpenAIService:
             
             logger.debug(
                 f"OpenAI API response received: "
-                f"status=success, images_count={len(response.data) if response.data else 0}"
+                f"status=success, images_count={len(response.data) if response.data else 0}, "
+                f"response_type={type(response.data[0]) if response.data else 'None'}"
             )
             
             if not response.data or len(response.data) == 0:
                 raise ValueError("OpenAI API returned empty response")
             
-            image_b64 = response.data[0].b64_json
-            if not image_b64:
-                raise ValueError("OpenAI API response missing b64_json data")
+            # gpt-image-1 returns image data - check if it's URL or base64
+            image_data = response.data[0]
             
-            image_bytes = base64.b64decode(image_b64)
-            logger.info(
-                f"Successfully generated sticker image: "
-                f"size={len(image_bytes)} bytes, "
-                f"format=webp (decoded from base64)"
-            )
+            # Check if response has b64_json (base64 encoded)
+            if hasattr(image_data, 'b64_json') and image_data.b64_json:
+                image_bytes = base64.b64decode(image_data.b64_json)
+                logger.info(
+                    f"Successfully generated sticker image from base64: "
+                    f"size={len(image_bytes)} bytes"
+                )
+            # Check if response has url (need to download)
+            elif hasattr(image_data, 'url') and image_data.url:
+                logger.info(f"Downloading image from URL: {image_data.url}")
+                # Download image synchronously (since this method is sync)
+                img_response = requests.get(image_data.url, timeout=30)
+                img_response.raise_for_status()
+                image_bytes = img_response.content
+                logger.info(
+                    f"Successfully downloaded sticker image: "
+                    f"size={len(image_bytes)} bytes, "
+                    f"content_type={img_response.headers.get('content-type', 'unknown')}"
+                )
+            else:
+                # Try to get raw data if available
+                raise ValueError(
+                    f"OpenAI API response format not recognized. "
+                    f"Available attributes: {dir(image_data)}"
+                )
             
             return image_bytes
             

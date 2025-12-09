@@ -153,18 +153,20 @@ def create_sticker_router(cache_manager: CacheManager) -> APIRouter:
         response_class=StreamingResponse,
         summary="Generate Sticker",
         description="""
-        Generate a Telegram sticker image using OpenAI API based on a text prompt.
+        Generate a Telegram sticker image using OpenAI API (model: gpt-image-1) based on a text prompt.
         
         **Features:**
         - Generates WebP images with transparent background
-        - Configurable image quality (high/standard)
         - Configurable image size (e.g., 512x512, 1024x1024)
         - Optimized for Telegram sticker format
         
         **Parameters:**
-        - `prompt`: Text description of the sticker to generate
-        - `quality`: Image quality - "high" (default) or "standard"
+        - `prompt`: Text description of the sticker to generate (required)
+        - `quality`: Deprecated - kept for backward compatibility, but not used by API
         - `size`: Image dimensions in format "WIDTHxHEIGHT" (default: "512x512")
+        
+        **Note:** The `quality` parameter is accepted but ignored by the API. 
+        Model gpt-image-1 doesn't support quality parameter.
         
         **Response:**
         - Returns WebP image with transparent background
