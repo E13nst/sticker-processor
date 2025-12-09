@@ -10,11 +10,13 @@ from fastapi.responses import StreamingResponse
 from app.config import settings
 from app.services.cache_manager import CacheManager
 from app.services.telegram_enhanced import TelegramAPIError
+from app.services.openai_service import OpenAIService
 from app.services.image_combiner import (
     image_from_bytes,
     combine_images,
     image_to_webp
 )
+from app.models.requests import GenerateStickerRequest
 from app.utils.error_handler import handle_telegram_api_error, handle_timeout_error, handle_generic_error
 from app.utils.logging_helpers import log_performance
 from app.utils.response_builder import build_sticker_response_headers
@@ -28,6 +30,7 @@ class StickerHandler:
     def __init__(self, cache_manager: CacheManager):
         """Initialize sticker handler with cache manager."""
         self.cache_manager = cache_manager
+        self.openai_service = OpenAIService()
     
     async def get_sticker(
         self, 
@@ -488,4 +491,64 @@ class StickerHandler:
         except Exception as e:
             logger.warning(f"Error fetching sticker {file_id}: {e}")
             return None
+    
+    async def generate_sticker(
+        self,
+        request: GenerateStickerRequest
+    ) -> StreamingResponse:
+        """
+        Generate a sticker image using OpenAI API.
+        
+        Args:
+            request: GenerateStickerRequest with prompt, quality, and size
+            
+        Returns:
+            StreamingResponse with WebP image
+            
+        Raises:
+            HTTPException: On errors (400, 500)
+        """
+        start_time = time.time()
+        
+        try:
+            # Run OpenAI API call in thread pool since it's synchronous
+            loop = asyncio.get_event_loop()
+            image_bytes = await loop.run_in_executor(
+                None,
+                self.openai_service.generate_sticker,
+                request.prompt,
+                request.quality,
+                request.size
+            )
+            
+            processing_time = int((time.time() - start_time) * 1000)
+            logger.info(
+                f"Generated sticker: prompt='{request.prompt[:50]}...', "
+                f"size={len(image_bytes)} bytes, time={processing_time}ms"
+            )
+            
+            return StreamingResponse(
+                io.BytesIO(image_bytes),
+                media_type="image/webp",
+                headers={
+                    "X-Processing-Time-Ms": str(processing_time),
+                    "X-Image-Size": str(len(image_bytes)),
+                    "Content-Type": "image/webp"
+                }
+            )
+            
+        except ValueError as e:
+            elapsed_time = int((time.time() - start_time) * 1000)
+            logger.error(f"Validation error generating sticker: {e} (time: {elapsed_time}ms)")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to generate sticker: {str(e)}"
+            )
+        except Exception as e:
+            elapsed_time = int((time.time() - start_time) * 1000)
+            logger.error(f"Error generating sticker: {e} (time: {elapsed_time}ms)")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Internal server error while generating sticker: {str(e)}"
+            )
 

@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     # Telegram Bot Configuration
     telegram_bot_token: str
     
+    # OpenAI Configuration
+    openai_api_key: str
+    
     # Redis Configuration
     redis_enabled: bool = True  # Enable/disable Redis cache entirely
     redis_host: str = "localhost"

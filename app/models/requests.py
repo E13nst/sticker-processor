@@ -112,3 +112,46 @@ class CombineStickerSetRequest(BaseModel):
         
         return self
 
+
+class GenerateStickerRequest(BaseModel):
+    """Request model for generating a sticker using OpenAI."""
+    
+    prompt: str = Field(..., min_length=1, max_length=1000, description="Text prompt for sticker generation")
+    quality: str = Field(default="high", description="Image quality: 'high' or 'standard' (default: 'high')")
+    size: str = Field(default="512x512", description="Image size in format 'WIDTHxHEIGHT' (default: '512x512')")
+    
+    @field_validator('prompt')
+    @classmethod
+    def validate_prompt(cls, v):
+        """Validate prompt format."""
+        if not v or not v.strip():
+            raise ValueError("Prompt cannot be empty")
+        return v.strip()
+    
+    @field_validator('quality')
+    @classmethod
+    def validate_quality(cls, v):
+        """Validate quality value."""
+        if v not in ["high", "standard"]:
+            raise ValueError("quality must be one of: 'high', 'standard'")
+        return v
+    
+    @field_validator('size')
+    @classmethod
+    def validate_size(cls, v):
+        """Validate size format."""
+        if not v:
+            raise ValueError("Size cannot be empty")
+        # Validate format: WIDTHxHEIGHT (e.g., "512x512", "1024x1024")
+        pattern = r'^\d+x\d+$'
+        if not re.match(pattern, v):
+            raise ValueError("Size must be in format 'WIDTHxHEIGHT' (e.g., '512x512')")
+        # Extract dimensions
+        parts = v.split('x')
+        width = int(parts[0])
+        height = int(parts[1])
+        # Validate dimensions are reasonable
+        if width < 256 or width > 2048 or height < 256 or height > 2048:
+            raise ValueError("Size dimensions must be between 256 and 2048 pixels")
+        return v
+

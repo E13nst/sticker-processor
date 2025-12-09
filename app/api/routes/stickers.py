@@ -4,7 +4,7 @@ from fastapi.responses import StreamingResponse
 
 from app.services.cache_manager import CacheManager
 from app.handlers.sticker_handler import StickerHandler
-from app.models.requests import CombineStickersRequest, CombineStickerSetRequest
+from app.models.requests import CombineStickersRequest, CombineStickerSetRequest, GenerateStickerRequest
 
 
 def create_sticker_router(cache_manager: CacheManager) -> APIRouter:
@@ -147,6 +147,46 @@ def create_sticker_router(cache_manager: CacheManager) -> APIRouter:
             tile_size=request.tile_size,
             max_stickers=request.max_stickers
         )
+    
+    @router.post(
+        "/stickers/generate",
+        response_class=StreamingResponse,
+        summary="Generate Sticker",
+        description="""
+        Generate a Telegram sticker image using OpenAI API based on a text prompt.
+        
+        **Features:**
+        - Generates WebP images with transparent background
+        - Configurable image quality (high/standard)
+        - Configurable image size (e.g., 512x512, 1024x1024)
+        - Optimized for Telegram sticker format
+        
+        **Parameters:**
+        - `prompt`: Text description of the sticker to generate
+        - `quality`: Image quality - "high" (default) or "standard"
+        - `size`: Image dimensions in format "WIDTHxHEIGHT" (default: "512x512")
+        
+        **Response:**
+        - Returns WebP image with transparent background
+        - Headers include processing time and image size
+        """,
+        tags=["Stickers"],
+        responses={
+            200: {
+                "description": "Generated WebP sticker image",
+                "headers": {
+                    "X-Processing-Time-Ms": {"description": "Processing time in milliseconds"},
+                    "X-Image-Size": {"description": "Image size in bytes"},
+                    "Content-Type": {"description": "image/webp"}
+                }
+            },
+            400: {"description": "Bad request (invalid prompt, quality, or size)"},
+            500: {"description": "Internal server error (OpenAI API error)"}
+        }
+    )
+    async def generate_sticker(request: GenerateStickerRequest):
+        """Generate a sticker image using OpenAI API."""
+        return await handler.generate_sticker(request)
     
     return router
 
