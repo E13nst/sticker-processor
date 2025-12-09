@@ -16,6 +16,8 @@ class OpenAIService:
     
     def __init__(self):
         """Initialize OpenAI client with API key from settings."""
+        if not settings.openai_api_key:
+            raise ValueError("OPENAI_API_KEY is not configured. Please set it in environment variables.")
         self.client = OpenAI(api_key=settings.openai_api_key)
     
     def generate_sticker(

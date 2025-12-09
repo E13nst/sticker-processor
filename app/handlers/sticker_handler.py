@@ -30,7 +30,14 @@ class StickerHandler:
     def __init__(self, cache_manager: CacheManager):
         """Initialize sticker handler with cache manager."""
         self.cache_manager = cache_manager
-        self.openai_service = OpenAIService()
+        self._openai_service = None
+    
+    @property
+    def openai_service(self) -> OpenAIService:
+        """Lazy initialization of OpenAI service."""
+        if self._openai_service is None:
+            self._openai_service = OpenAIService()
+        return self._openai_service
     
     async def get_sticker(
         self, 
@@ -511,11 +518,22 @@ class StickerHandler:
         start_time = time.time()
         
         try:
+            # Initialize OpenAI service (lazy initialization)
+            try:
+                openai_service = self.openai_service
+            except ValueError as e:
+                elapsed_time = int((time.time() - start_time) * 1000)
+                logger.error(f"OpenAI service not configured: {e} (time: {elapsed_time}ms)")
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"OpenAI service is not available: {str(e)}. Please configure OPENAI_API_KEY in environment variables."
+                )
+            
             # Run OpenAI API call in thread pool since it's synchronous
             loop = asyncio.get_event_loop()
             image_bytes = await loop.run_in_executor(
                 None,
-                self.openai_service.generate_sticker,
+                openai_service.generate_sticker,
                 request.prompt,
                 request.quality,
                 request.size

@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     telegram_bot_token: str
     
     # OpenAI Configuration
-    openai_api_key: str
+    openai_api_key: Optional[str] = None
     
     # Redis Configuration
     redis_enabled: bool = True  # Enable/disable Redis cache entirely
