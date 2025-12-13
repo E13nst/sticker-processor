@@ -329,18 +329,48 @@ class RedisService:
             logger.error(f"Error storing sticker set {name} in cache: {e}")
             return False
     
-    async def clear_all_cache(self) -> bool:
+    async def clear_cache(self) -> int:
         """Clear all cached stickers."""
         if not self.redis:
-            return False
+            return 0
         
         try:
             pattern = "sticker:file:*"
             keys = await self.redis.keys(pattern)
             if keys:
-                await self.redis.delete(*keys)
-                logger.info(f"Cleared {len(keys)} stickers from cache")
-            return True
+                deleted = await self.redis.delete(*keys)
+                logger.info(f"Cleared {deleted} stickers from cache")
+                return deleted
+            return 0
         except Exception as e:
             logger.error(f"Error clearing cache: {e}")
-            return False
+            return 0
+    
+    async def cleanup_expired_stickers(self) -> int:
+        """Clean up expired stickers (Redis handles TTL automatically, but this can force cleanup)."""
+        if not self.redis:
+            return 0
+        
+        try:
+            # Redis automatically removes expired keys, but we can check and remove manually
+            # This is mainly for statistics/logging purposes
+            pattern = "sticker:file:*"
+            keys = await self.redis.keys(pattern)
+            expired_count = 0
+            
+            for key in keys:
+                ttl = await self.redis.ttl(key)
+                if ttl == -2:  # Key doesn't exist (already expired)
+                    expired_count += 1
+                elif ttl == -1:  # Key exists but has no expiration
+                    # Set expiration if missing
+                    ttl_seconds = self.ttl_days * 24 * 60 * 60
+                    await self.redis.expire(key, ttl_seconds)
+            
+            if expired_count > 0:
+                logger.info(f"Found {expired_count} expired stickers (already removed by Redis)")
+            
+            return expired_count
+        except Exception as e:
+            logger.error(f"Error cleaning up expired stickers: {e}")
+            return 0

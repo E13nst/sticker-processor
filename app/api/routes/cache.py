@@ -10,91 +10,133 @@ def create_cache_router(cache_manager: CacheManager) -> APIRouter:
     router = APIRouter()
     handler = CacheHandler(cache_manager)
     
+    # Redis cache endpoints
     @router.get(
-        "/cache/stats",
-        summary="Cache Statistics",
-        description="""
-        Get comprehensive cache statistics including:
-        
-        - **Overall Statistics**: Total requests, cache hit rates, performance metrics
-        - **Redis Cache**: Memory cache statistics and availability
-        - **Disk Cache**: Persistent storage statistics and usage
-        - **Telegram API**: API usage, rate limiting events, retry attempts
-        - **Service Info**: Feature availability and configuration status
-        """,
-        tags=["Cache Management"],
+        "/cache/redis/stats",
+        summary="Redis Cache Statistics",
+        description="Get Redis cache statistics including total files, size, and file types",
+        tags=["Cache Management - Redis"],
         responses={
-            200: {
-                "description": "Comprehensive cache statistics",
-                "content": {
-                    "application/json": {
-                        "example": {
-                            "total_files": 1250,
-                            "total_size_bytes": 245600000,
-                            "cache_hit_rate": 87.5,
-                            "redis": {"total_files": 45, "cache_hits": 1200},
-                            "disk": {"total_files": 1250, "cache_hits": 800},
-                            "telegram_api": {"total_requests": 450, "rate_limited_requests": 12}
-                        }
-                    }
-                }
-            }
+            200: {"description": "Redis cache statistics"},
+            503: {"description": "Redis cache is not available"}
         }
     )
-    async def get_cache_stats():
-        """Get comprehensive cache statistics."""
-        return await handler.get_cache_stats()
+    async def get_redis_stats():
+        """Get Redis cache statistics."""
+        return await handler.get_redis_stats()
     
     @router.delete(
-        "/cache/{file_id}",
-        summary="Delete File from Cache",
-        description="Delete a specific file from both Redis and disk cache",
-        tags=["Cache Management"],
+        "/cache/redis/clear",
+        summary="Clear Redis Cache",
+        description="Clear all files from Redis cache",
+        tags=["Cache Management - Redis"],
         responses={
-            200: {"description": "File deleted successfully"},
-            404: {"description": "File not found in cache"}
+            200: {"description": "Redis cache cleared successfully"},
+            503: {"description": "Redis cache is not available"}
         }
     )
-    async def delete_from_cache(file_id: str):
-        """Delete specific file from cache."""
-        return await handler.delete_from_cache(file_id)
-    
-    @router.delete(
-        "/cache/all",
-        summary="Clear All Cache",
-        description="Clear all cached files from both Redis and disk cache",
-        tags=["Cache Management"],
-        responses={
-            200: {"description": "All cache cleared successfully"}
-        }
-    )
-    async def clear_all_cache():
-        """Clear all cached files."""
-        return await handler.clear_all_cache()
+    async def clear_redis_cache():
+        """Clear all Redis cache."""
+        return await handler.clear_redis_cache()
     
     @router.post(
-        "/cache/cleanup",
-        summary="Cleanup Cache",
+        "/cache/redis/cleanup",
+        summary="Cleanup Redis Cache",
+        description="Clean up expired files from Redis cache",
+        tags=["Cache Management - Redis"],
+        responses={
+            200: {"description": "Redis cache cleanup completed"},
+            503: {"description": "Redis cache is not available"}
+        }
+    )
+    async def cleanup_redis_cache():
+        """Clean up expired Redis cache."""
+        return await handler.cleanup_redis_cache()
+    
+    @router.delete(
+        "/cache/redis/{file_id}",
+        summary="Delete File from Redis Cache",
+        description="Delete a specific file from Redis cache",
+        tags=["Cache Management - Redis"],
+        responses={
+            200: {"description": "File deleted successfully"},
+            404: {"description": "File not found in Redis cache"},
+            503: {"description": "Redis cache is not available"}
+        }
+    )
+    async def delete_from_redis(file_id: str):
+        """Delete specific file from Redis cache."""
+        return await handler.delete_from_redis(file_id)
+    
+    # Disk cache endpoints
+    @router.get(
+        "/cache/disk/stats",
+        summary="Disk Cache Statistics",
+        description="Get disk cache statistics including total files, size, and file types",
+        tags=["Cache Management - Disk"],
+        responses={
+            200: {"description": "Disk cache statistics"},
+            503: {"description": "Disk cache is not enabled"}
+        }
+    )
+    async def get_disk_stats():
+        """Get disk cache statistics."""
+        return await handler.get_disk_stats()
+    
+    @router.delete(
+        "/cache/disk/clear",
+        summary="Clear Disk Cache",
+        description="Clear all files from disk cache",
+        tags=["Cache Management - Disk"],
+        responses={
+            200: {"description": "Disk cache cleared successfully"},
+            503: {"description": "Disk cache is not enabled"}
+        }
+    )
+    async def clear_disk_cache():
+        """Clear all disk cache."""
+        return await handler.clear_disk_cache()
+    
+    @router.post(
+        "/cache/disk/cleanup",
+        summary="Cleanup Disk Cache",
         description="""
-        Clean up expired and old files from cache:
+        Clean up expired and old files from disk cache:
         
         - Remove expired files (past TTL)
         - Remove oldest files if cache exceeds size limit
         - Optimize cache performance and storage usage
         """,
-        tags=["Cache Management"],
+        tags=["Cache Management - Disk"],
         responses={
-            200: {"description": "Cache cleanup completed successfully"}
+            200: {"description": "Disk cache cleanup completed"},
+            503: {"description": "Disk cache is not enabled"}
         }
     )
-    async def cleanup_cache():
-        """Clean up expired and old files from cache."""
-        return await handler.cleanup_cache()
+    async def cleanup_disk_cache():
+        """Clean up expired and old files from disk cache."""
+        return await handler.cleanup_disk_cache()
+    
+    @router.delete(
+        "/cache/disk/{file_id}",
+        summary="Delete File from Disk Cache",
+        description="Delete a specific file from disk cache",
+        tags=["Cache Management - Disk"],
+        responses={
+            200: {"description": "File deleted successfully"},
+            404: {"description": "File not found in disk cache"},
+            503: {"description": "Disk cache is not enabled"}
+        }
+    )
+    async def delete_from_disk(file_id: str):
+        """Delete specific file from disk cache."""
+        return await handler.delete_from_disk(file_id)
     
     @router.get(
         "/cache/strategy",
         summary="Cache Strategy Information",
-        description="Get information about current cache strategy configuration"
+        description="Get information about current cache strategy configuration",
+        tags=["Cache Management"]
     )
     async def get_cache_strategy():
         """Get cache strategy configuration."""

@@ -135,17 +135,16 @@ class TestDiskCacheService:
             retrieved = await disk_cache_service.get_file(file_id, file_format)
             assert retrieved == file_content
         
-        with allure.step("Manually expire file by modifying metadata"):
-            # Simulate expiration by setting old expiry date
-            from datetime import datetime, timedelta
-            import json
+        with allure.step("Manually expire file by modifying metadata in database"):
+            # Simulate expiration by setting old expiry date in SQLite
+            await disk_cache_service._ensure_db_connection()
             expired_date = (datetime.now() - timedelta(days=1)).isoformat()
-            # Write metadata in the format that _read_metadata expects
-            metadata_path = disk_cache_service._get_metadata_path(file_id, file_format)
-            metadata_path.parent.mkdir(parents=True, exist_ok=True)
-            async with aiofiles.open(metadata_path, 'w') as f:
-                # Write as key: value format that _read_metadata parses
-                await f.write(f"file_id: {file_id}\nformat: {file_format}\nexpires_at: {expired_date}\n")
+            await disk_cache_service._metadata_db.execute("""
+                UPDATE cache_metadata 
+                SET expires_at = ? 
+                WHERE file_id = ? AND file_format = ?
+            """, (expired_date, file_id, file_format))
+            await disk_cache_service._metadata_db.commit()
         
         with allure.step("Try to retrieve expired file"):
             retrieved = await disk_cache_service.get_file(file_id, file_format)

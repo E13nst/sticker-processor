@@ -143,8 +143,13 @@ class TestE2ERealStickers:
             )
         
         with allure.step("Get initial cache statistics"):
-            stats_before = await client.get("/cache/stats")
-            stats_before_data = stats_before.json() if stats_before.status_code == 200 else {}
+            # Get stats from both Redis and Disk caches
+            redis_stats_before = await client.get("/cache/redis/stats")
+            disk_stats_before = await client.get("/cache/disk/stats")
+            stats_before_data = {
+                "redis": redis_stats_before.json() if redis_stats_before.status_code == 200 else {},
+                "disk": disk_stats_before.json() if disk_stats_before.status_code == 200 else {}
+            }
             allure.attach(
                 json.dumps(stats_before_data, indent=2, default=str),
                 "Cache Stats Before",
@@ -222,8 +227,13 @@ class TestE2ERealStickers:
                     )
         
         with allure.step("Get final cache statistics"):
-            stats_after = await client.get("/cache/stats")
-            stats_after_data = stats_after.json() if stats_after.status_code == 200 else {}
+            # Get stats from both Redis and Disk caches
+            redis_stats_after = await client.get("/cache/redis/stats")
+            disk_stats_after = await client.get("/cache/disk/stats")
+            stats_after_data = {
+                "redis": redis_stats_after.json() if redis_stats_after.status_code == 200 else {},
+                "disk": disk_stats_after.json() if disk_stats_after.status_code == 200 else {}
+            }
             allure.attach(
                 json.dumps(stats_after_data, indent=2, default=str),
                 "Cache Stats After",

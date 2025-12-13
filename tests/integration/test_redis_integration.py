@@ -67,6 +67,10 @@ class TestRedisIntegration:
         """Test getting cache statistics."""
         import asyncio
         
+        # Check if Redis is available
+        if not redis_service.redis:
+            pytest.skip("Redis is not available")
+        
         # Create test entries
         for i in range(3):
             sticker = create_test_cache_entry(
@@ -81,7 +85,7 @@ class TestRedisIntegration:
                 redis_service.get_cache_stats(),
                 timeout=10.0  # 10 seconds timeout
             )
-            assert stats is not None
+            assert stats is not None, "Cache stats should not be None"
             assert stats.total_files >= 3
             assert stats.converted_files >= 3
             assert stats.total_size_bytes >= 3000

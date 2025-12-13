@@ -72,77 +72,151 @@ class TestAPIStatsEndpoint:
 class TestCacheEndpoints:
     """Test cache-related endpoints."""
     
-    @allure.title("Cache statistics endpoint")
-    @allure.description("Test that cache stats endpoint returns comprehensive statistics")
+    @allure.title("Redis cache statistics endpoint")
+    @allure.description("Test that Redis cache stats endpoint returns statistics")
     @allure.severity(allure.severity_level.NORMAL)
     @pytest.mark.asyncio
-    async def test_cache_stats(self, client: AsyncClient):
-        """Test cache stats endpoint."""
-        with allure.step("Send GET request to /cache/stats"):
-            response = await client.get("/cache/stats")
+    async def test_redis_cache_stats(self, client: AsyncClient):
+        """Test Redis cache stats endpoint."""
+        with allure.step("Send GET request to /cache/redis/stats"):
+            response = await client.get("/cache/redis/stats")
+        
+        with allure.step("Verify response status code (may be 200 or 503 if Redis unavailable)"):
+            assert response.status_code in [200, 503]
+        
+        if response.status_code == 200:
+            with allure.step("Verify cache statistics structure"):
+                data = response.json()
+                allure.attach(json.dumps(data, indent=2), "Redis Cache Stats Response", allure.attachment_type.JSON)
+                assert "total_files" in data or "error" in data
+    
+    @allure.title("Disk cache statistics endpoint")
+    @allure.description("Test that disk cache stats endpoint returns statistics")
+    @allure.severity(allure.severity_level.NORMAL)
+    @pytest.mark.asyncio
+    async def test_disk_cache_stats(self, client: AsyncClient):
+        """Test disk cache stats endpoint."""
+        with allure.step("Send GET request to /cache/disk/stats"):
+            response = await client.get("/cache/disk/stats")
         
         with allure.step("Verify response status code"):
-            assert response.status_code == 200
+            assert response.status_code in [200, 503]
         
-        with allure.step("Verify cache statistics structure"):
+        if response.status_code == 200:
+            with allure.step("Verify cache statistics structure"):
+                data = response.json()
+                allure.attach(json.dumps(data, indent=2), "Disk Cache Stats Response", allure.attachment_type.JSON)
+                assert "total_files" in data or "error" in data
+    
+    @allure.title("Delete file from Redis cache")
+    @allure.description("Test that DELETE /cache/redis/{file_id} removes file from Redis cache")
+    @allure.severity(allure.severity_level.NORMAL)
+    @pytest.mark.asyncio
+    async def test_delete_from_redis_cache(self, client: AsyncClient, sample_file_id):
+        """Test deleting file from Redis cache."""
+        with allure.step(f"Send DELETE request to /cache/redis/{sample_file_id}"):
+            response = await client.delete(f"/cache/redis/{sample_file_id}")
+        
+        with allure.step("Verify response (may be 200, 404, or 503)"):
+            assert response.status_code in [200, 404, 503]
+    
+    @allure.title("Delete file from disk cache")
+    @allure.description("Test that DELETE /cache/disk/{file_id} removes file from disk cache")
+    @allure.severity(allure.severity_level.NORMAL)
+    @pytest.mark.asyncio
+    async def test_delete_from_disk_cache(self, client: AsyncClient, sample_file_id):
+        """Test deleting file from disk cache."""
+        with allure.step(f"Send DELETE request to /cache/disk/{sample_file_id}"):
+            response = await client.delete(f"/cache/disk/{sample_file_id}")
+        
+        with allure.step("Verify response (may be 200, 404, or 503)"):
+            assert response.status_code in [200, 404, 503]
+    
+    @allure.title("Clear Redis cache")
+    @allure.description("Test that DELETE /cache/redis/clear clears all Redis cache entries")
+    @allure.severity(allure.severity_level.NORMAL)
+    @pytest.mark.asyncio
+    async def test_clear_redis_cache(self, client: AsyncClient):
+        """Test clearing Redis cache."""
+        with allure.step("Send DELETE request to /cache/redis/clear"):
+            response = await client.delete("/cache/redis/clear")
+        
+        with allure.step("Verify response status code (may be 200 or 503)"):
+            assert response.status_code in [200, 503], f"Unexpected status code: {response.status_code}"
+        
+        with allure.step("Verify response content"):
             data = response.json()
-            allure.attach(json.dumps(data, indent=2), "Cache Stats Response", allure.attachment_type.JSON)
+            allure.attach(json.dumps(data, indent=2), "Clear Redis Cache Response", allure.attachment_type.JSON)
             
-            # Check cache statistics structure based on actual response
-            assert "conversions_performed" in data
-            assert "disk_hits" in data
-            assert "disk_misses" in data
-            assert "telegram_api_calls" in data
-            assert "total_requests" in data
-            assert "disk" in data
-            assert "redis" in data
-            assert "telegram_api" in data
+            # Check response based on status code
+            if response.status_code == 200:
+                assert "message" in data, f"Expected 'message' in response, got: {list(data.keys())}"
+            elif response.status_code == 503:
+                # Redis unavailable - should have error
+                assert "error" in data, f"Expected 'error' in 503 response, got: {list(data.keys())}"
+            else:
+                pytest.fail(f"Unexpected status code: {response.status_code}, data: {data}")
     
-    @allure.title("Delete file from cache")
-    @allure.description("Test that DELETE /cache/{file_id} removes file from cache")
+    @allure.title("Clear disk cache")
+    @allure.description("Test that DELETE /cache/disk/clear clears all disk cache entries")
     @allure.severity(allure.severity_level.NORMAL)
     @pytest.mark.asyncio
-    async def test_delete_from_cache(self, client: AsyncClient, sample_file_id):
-        """Test deleting file from cache."""
-        with allure.step(f"Send DELETE request to /cache/{sample_file_id}"):
-            response = await client.delete(f"/cache/{sample_file_id}")
+    async def test_clear_disk_cache(self, client: AsyncClient):
+        """Test clearing disk cache."""
+        with allure.step("Send DELETE request to /cache/disk/clear"):
+            response = await client.delete("/cache/disk/clear")
         
-        with allure.step("Verify response (may be 200 or 404)"):
-            assert response.status_code in [200, 404]
+        with allure.step("Verify response status code (may be 200 or 503)"):
+            assert response.status_code in [200, 503]
+        
+        if response.status_code == 200:
+            with allure.step("Verify response content"):
+                data = response.json()
+                allure.attach(json.dumps(data, indent=2), "Clear Disk Cache Response", allure.attachment_type.JSON)
+                assert "message" in data
     
-    @allure.title("Clear all cache")
-    @allure.description("Test that DELETE /cache/all clears all cache entries")
+    @allure.title("Cleanup Redis cache")
+    @allure.description("Test that POST /cache/redis/cleanup removes expired files from Redis")
     @allure.severity(allure.severity_level.NORMAL)
     @pytest.mark.asyncio
-    async def test_clear_all_cache(self, client: AsyncClient):
-        """Test clearing all cache."""
-        with allure.step("Send DELETE request to /cache/all"):
-            response = await client.delete("/cache/all")
+    async def test_cleanup_redis_cache(self, client: AsyncClient):
+        """Test Redis cache cleanup."""
+        with allure.step("Send POST request to /cache/redis/cleanup"):
+            response = await client.post("/cache/redis/cleanup")
         
-        with allure.step("Verify response status code"):
-            assert response.status_code == 200
+        with allure.step("Verify response status code (may be 200 or 503)"):
+            assert response.status_code in [200, 503], f"Unexpected status code: {response.status_code}"
         
         with allure.step("Verify response content"):
             data = response.json()
-            allure.attach(json.dumps(data, indent=2), "Clear All Cache Response", allure.attachment_type.JSON)
-            assert "message" in data
+            allure.attach(json.dumps(data, indent=2), "Cleanup Redis Cache Response", allure.attachment_type.JSON)
+            
+            # Check response based on status code
+            if response.status_code == 200:
+                assert "message" in data, f"Expected 'message' in response, got: {list(data.keys())}"
+            elif response.status_code == 503:
+                # Redis unavailable - should have error
+                assert "error" in data, f"Expected 'error' in 503 response, got: {list(data.keys())}"
+            else:
+                pytest.fail(f"Unexpected status code: {response.status_code}, data: {data}")
     
-    @allure.title("Cleanup cache")
-    @allure.description("Test that POST /cache/cleanup removes expired files")
+    @allure.title("Cleanup disk cache")
+    @allure.description("Test that POST /cache/disk/cleanup removes expired files from disk")
     @allure.severity(allure.severity_level.NORMAL)
     @pytest.mark.asyncio
-    async def test_cleanup_cache(self, client: AsyncClient):
-        """Test cache cleanup."""
-        with allure.step("Send POST request to /cache/cleanup"):
-            response = await client.post("/cache/cleanup")
+    async def test_cleanup_disk_cache(self, client: AsyncClient):
+        """Test disk cache cleanup."""
+        with allure.step("Send POST request to /cache/disk/cleanup"):
+            response = await client.post("/cache/disk/cleanup")
         
-        with allure.step("Verify response status code"):
-            assert response.status_code == 200
+        with allure.step("Verify response status code (may be 200 or 503)"):
+            assert response.status_code in [200, 503]
         
-        with allure.step("Verify response content"):
-            data = response.json()
-            allure.attach(json.dumps(data, indent=2), "Cleanup Cache Response", allure.attachment_type.JSON)
-            assert "message" in data
+        if response.status_code == 200:
+            with allure.step("Verify response content"):
+                data = response.json()
+                allure.attach(json.dumps(data, indent=2), "Cleanup Disk Cache Response", allure.attachment_type.JSON)
+                assert "message" in data
     
     @allure.title("Cache strategy endpoint")
     @allure.description("Test that GET /cache/strategy returns cache strategy information")

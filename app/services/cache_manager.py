@@ -65,6 +65,7 @@ class CacheManager:
         """Disconnect from services."""
         await self.redis_service.disconnect()
         await self.telegram_service.close()
+        await self.disk_cache_service.close_db()
         logger.info("CacheManager disconnected")
     
     async def get_sticker(self, file_id: str) -> Optional[Tuple[bytes, str, bool]]:

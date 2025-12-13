@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime, timedelta
 import aiofiles
+import aiosqlite
 
 from app.config import settings
 
@@ -25,6 +26,10 @@ class DiskCacheService:
         
         # Ensure cache directory exists
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        # SQLite database connection
+        self._metadata_db = None
+        self._db_path = None
         
         # Statistics
         self.stats = {
@@ -46,56 +51,97 @@ class DiskCacheService:
         """Generate a hash for the file ID to use as filename."""
         return hashlib.md5(file_id.encode()).hexdigest()
     
-    def _get_cache_path(self, file_id: str, file_format: str) -> Path:
-        """Get the cache file path for a given file ID and format."""
-        file_hash = self._get_file_hash(file_id)
-        # Create separate directories for each file format
-        format_dir = self.cache_dir / file_format
-        return format_dir / f"{file_hash}.{file_format}"
-    
-    def _get_metadata_path(self, file_id: str, file_format: str = None) -> Path:
-        """Get the metadata file path for a given file ID."""
-        file_hash = self._get_file_hash(file_id)
-        if file_format:
-            # Store metadata in the same format directory
-            format_dir = self.cache_dir / file_format
-            return format_dir / f"{file_hash}.meta"
-        else:
-            # Fallback to root directory for backward compatibility
-            return self.cache_dir / f"{file_hash}.meta"
-    
-    async def _write_metadata(self, file_id: str, metadata: Dict[str, Any], file_format: str = None) -> None:
-        """Write metadata to disk."""
-        metadata_path = self._get_metadata_path(file_id, file_format)
-        # Ensure directory exists
-        metadata_path.parent.mkdir(parents=True, exist_ok=True)
-        async with aiofiles.open(metadata_path, 'w') as f:
-            await f.write(str(metadata))
-    
-    async def _read_metadata(self, file_id: str, file_format: str = None) -> Optional[Dict[str, Any]]:
-        """Read metadata from disk."""
-        metadata_path = self._get_metadata_path(file_id, file_format)
-        if not metadata_path.exists():
-            return None
+    def _get_metadata_db_path(self) -> Path:
+        """Determine path to SQLite database.
         
+        Priority:
+        1. /data/sticker_cache_metadata.db (production - persistent storage)
+        2. {disk_cache_dir}/sticker_cache_metadata.db (local/dev - fallback)
+        """
+        # Check if /data directory exists and is writable (production)
+        data_dir = Path("/data")
+        if data_dir.exists() and os.access(data_dir, os.W_OK):
+            data_dir.mkdir(parents=True, exist_ok=True)
+            return data_dir / "sticker_cache_metadata.db"
+        
+        # Fallback to disk_cache_dir (local development)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        return self.cache_dir / "sticker_cache_metadata.db"
+    
+    def _get_cache_path(self, file_id: str, file_format: str) -> Path:
+        """Get the cache file path with hierarchical structure.
+        
+        Uses 2-level hierarchy: format/hash[0:2]/hash[2:4]/filename
+        This distributes 50k files across ~256 directories for better FS performance.
+        """
+        file_hash = self._get_file_hash(file_id)
+        # Create hierarchical structure: format/hash[0:2]/hash[2:4]/filename
+        format_dir = self.cache_dir / file_format
+        subdir1 = format_dir / file_hash[:2]
+        subdir2 = subdir1 / file_hash[2:4]
+        return subdir2 / f"{file_hash}.{file_format}"
+    
+    async def _ensure_db_connection(self):
+        """Ensure database connection is active."""
+        if self._metadata_db is None:
+            await self._init_metadata_db()
+        # Reconnect if connection lost
         try:
-            async with aiofiles.open(metadata_path, 'r') as f:
-                content = await f.read()
-                # Simple metadata parsing (in production, use JSON)
-                metadata = {}
-                for line in content.strip().split('\n'):
-                    if ':' in line:
-                        key, value = line.split(':', 1)
-                        metadata[key.strip()] = value.strip()
-                return metadata
+            await self._metadata_db.execute("SELECT 1")
+        except Exception:
+            await self._init_metadata_db()
+    
+    async def _init_metadata_db(self):
+        """Initialize SQLite database for metadata."""
+        try:
+            self._db_path = self._get_metadata_db_path()
+            self._metadata_db = await aiosqlite.connect(str(self._db_path))
+            
+            # Create table for cache metadata
+            await self._metadata_db.execute("""
+                CREATE TABLE IF NOT EXISTS cache_metadata (
+                    file_id TEXT NOT NULL,
+                    file_hash TEXT NOT NULL,
+                    file_format TEXT NOT NULL,
+                    size INTEGER NOT NULL,
+                    original_size INTEGER,
+                    converted INTEGER DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    PRIMARY KEY (file_id, file_format)
+                )
+            """)
+            
+            # Create indexes for fast queries
+            await self._metadata_db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_expires_at ON cache_metadata(expires_at)
+            """)
+            await self._metadata_db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_created_at ON cache_metadata(created_at)
+            """)
+            await self._metadata_db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_file_hash ON cache_metadata(file_hash)
+            """)
+            
+            await self._metadata_db.commit()
+            logger.info(f"SQLite metadata database initialized: {self._db_path}")
         except Exception as e:
-            logger.error(f"Error reading metadata for {file_id}: {e}")
-            return None
+            logger.error(f"Error initializing metadata database: {e}")
+            raise
+    
+    async def close_db(self):
+        """Close database connection."""
+        if self._metadata_db:
+            await self._metadata_db.close()
+            self._metadata_db = None
+            logger.info("SQLite metadata database connection closed")
     
     async def store_file(self, file_id: str, content: bytes, file_format: str, 
                         original_size: int = None, converted: bool = False) -> bool:
         """Store file content in disk cache."""
         try:
+            await self._ensure_db_connection()
+            
             cache_path = self._get_cache_path(file_id, file_format)
             
             # Ensure directory exists
@@ -110,17 +156,26 @@ class DiskCacheService:
             async with aiofiles.open(cache_path, 'wb') as f:
                 await f.write(content)
             
-            # Write metadata
-            metadata = {
-                'file_id': file_id,
-                'format': file_format,
-                'size': len(content),
-                'original_size': original_size or len(content),
-                'converted': converted,
-                'created_at': datetime.now().isoformat(),
-                'expires_at': (datetime.now() + timedelta(days=self.ttl_days)).isoformat(),
-            }
-            await self._write_metadata(file_id, metadata, file_format)
+            # Store metadata in database
+            file_hash = self._get_file_hash(file_id)
+            created_at = datetime.now().isoformat()
+            expires_at = (datetime.now() + timedelta(days=self.ttl_days)).isoformat()
+            
+            await self._metadata_db.execute("""
+                INSERT OR REPLACE INTO cache_metadata 
+                (file_id, file_hash, file_format, size, original_size, converted, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                file_id,
+                file_hash,
+                file_format,
+                len(content),
+                original_size or len(content),
+                1 if converted else 0,
+                created_at,
+                expires_at
+            ))
+            await self._metadata_db.commit()
             
             # Update statistics
             self.stats['total_files'] += 1
@@ -137,22 +192,34 @@ class DiskCacheService:
     async def get_file(self, file_id: str, file_format: str) -> Optional[bytes]:
         """Retrieve file content from disk cache."""
         try:
+            await self._ensure_db_connection()
+            
             cache_path = self._get_cache_path(file_id, file_format)
             
             if not cache_path.exists():
                 self.stats['cache_misses'] += 1
                 return None
             
-            # Check metadata for expiration
-            metadata = await self._read_metadata(file_id, file_format)
-            if metadata:
-                expires_at_str = metadata.get('expires_at', '')
-                if expires_at_str:
-                    expires_at = datetime.fromisoformat(expires_at_str)
-                else:
-                    expires_at = datetime.now() + timedelta(days=self.ttl_days)
+            # Check metadata for expiration from database
+            async with self._metadata_db.execute("""
+                SELECT expires_at FROM cache_metadata 
+                WHERE file_id = ? AND file_format = ?
+            """, (file_id, file_format)) as cursor:
+                row = await cursor.fetchone()
+                
+            if row:
+                expires_at_str = row[0]
+                expires_at = datetime.fromisoformat(expires_at_str)
                 if datetime.now() > expires_at:
                     # File expired, remove it
+                    await self.delete_file(file_id, file_format)
+                    self.stats['cache_misses'] += 1
+                    return None
+            else:
+                # No metadata in DB, file might be orphaned, check file age
+                file_stat = cache_path.stat()
+                file_age = datetime.now() - datetime.fromtimestamp(file_stat.st_mtime)
+                if file_age > timedelta(days=self.ttl_days):
                     await self.delete_file(file_id, file_format)
                     self.stats['cache_misses'] += 1
                     return None
@@ -173,8 +240,9 @@ class DiskCacheService:
     async def delete_file(self, file_id: str, file_format: str) -> bool:
         """Delete file from disk cache."""
         try:
+            await self._ensure_db_connection()
+            
             cache_path = self._get_cache_path(file_id, file_format)
-            metadata_path = self._get_metadata_path(file_id)
             
             # Get file size before deletion
             file_size = 0
@@ -182,8 +250,12 @@ class DiskCacheService:
                 file_size = cache_path.stat().st_size
                 cache_path.unlink()
             
-            if metadata_path.exists():
-                metadata_path.unlink()
+            # Remove metadata from database
+            await self._metadata_db.execute("""
+                DELETE FROM cache_metadata 
+                WHERE file_id = ? AND file_format = ?
+            """, (file_id, file_format))
+            await self._metadata_db.commit()
             
             # Update statistics
             if file_size > 0:
@@ -198,45 +270,38 @@ class DiskCacheService:
             logger.error(f"Error deleting file {file_id} from disk cache: {e}")
             return False
     
-    async def cleanup_expired_files(self) -> int:
-        """Remove expired files from disk cache."""
+    async def cleanup_expired_files(self, batch_size: int = 1000) -> int:
+        """Remove expired files from disk cache using database index."""
         try:
-            removed_count = 0
-            current_time = datetime.now()
+            await self._ensure_db_connection()
             
-            for file_path in self.cache_dir.rglob("*.meta"):
-                try:
-                    # Read metadata
-                    async with aiofiles.open(file_path, 'r') as f:
-                        content = await f.read()
-                    
-                    # Parse metadata
-                    metadata = {}
-                    for line in content.strip().split('\n'):
-                        if ':' in line:
-                            key, value = line.split(':', 1)
-                            metadata[key.strip()] = value.strip()
-                    
-                    expires_at_str = metadata.get('expires_at', '')
-                    if expires_at_str:
-                        expires_at = datetime.fromisoformat(expires_at_str)
-                    else:
-                        expires_at = datetime.now() + timedelta(days=self.ttl_days)
-                    
-                    file_id = metadata.get('file_id', '')
-                    file_format = metadata.get('format', '')
-                    
-                    if current_time > expires_at:
-                        # File expired, remove it
-                        if await self.delete_file(file_id, file_format):
-                            removed_count += 1
-                            
-                except Exception as e:
-                    logger.error(f"Error processing metadata file {file_path}: {e}")
-                    continue
+            removed_count = 0
+            current_time = datetime.now().isoformat()
+            
+            # Query expired files in batches
+            while True:
+                async with self._metadata_db.execute("""
+                    SELECT file_id, file_format FROM cache_metadata 
+                    WHERE expires_at < ? 
+                    LIMIT ?
+                """, (current_time, batch_size)) as cursor:
+                    expired_files = await cursor.fetchall()
+                
+                if not expired_files:
+                    break
+                
+                # Delete files in parallel batches
+                tasks = []
+                for file_id, file_format in expired_files:
+                    tasks.append(self.delete_file(file_id, file_format))
+                
+                if tasks:
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    batch_removed = sum(1 for r in results if r is True)
+                    removed_count += batch_removed
             
             self.stats['cleanup_runs'] += 1
-            self.stats['last_cleanup'] = current_time.isoformat()
+            self.stats['last_cleanup'] = current_time
             
             if removed_count > 0:
                 logger.info(f"Cleaned up {removed_count} expired files from disk cache")
@@ -247,48 +312,53 @@ class DiskCacheService:
             logger.error(f"Error during disk cache cleanup: {e}")
             return 0
     
-    async def cleanup_oldest_files(self, target_size_mb: int) -> int:
-        """Remove oldest files to reduce cache size to target."""
+    async def cleanup_oldest_files(self, target_size_mb: int, max_workers: int = 10) -> int:
+        """Remove oldest files to reduce cache size to target using database."""
         try:
+            await self._ensure_db_connection()
+            
             target_size_bytes = target_size_mb * 1024 * 1024
             
-            if self.stats['total_size_bytes'] <= target_size_bytes:
+            # Get current total size from database
+            async with self._metadata_db.execute("""
+                SELECT SUM(size) FROM cache_metadata
+            """) as cursor:
+                row = await cursor.fetchone()
+                current_size = row[0] if row and row[0] else 0
+            
+            if current_size <= target_size_bytes:
                 return 0
             
-            # Collect all files with their metadata
-            files_info = []
-            for file_path in self.cache_dir.rglob("*.meta"):
-                try:
-                    metadata = await self._read_metadata("")
-                    if metadata:
-                        file_id = metadata.get('file_id', '')
-                        file_format = metadata.get('format', '')
-                        created_at_str = metadata.get('created_at', '')
-                        if created_at_str:
-                            created_at = datetime.fromisoformat(created_at_str)
-                        else:
-                            created_at = datetime.now()
-                        
-                        cache_path = self._get_cache_path(file_id, file_format)
-                        if cache_path.exists():
-                            file_size = cache_path.stat().st_size
-                            files_info.append((created_at, file_id, file_format, file_size))
-                            
-                except Exception as e:
-                    logger.error(f"Error processing file {file_path}: {e}")
-                    continue
-            
-            # Sort by creation time (oldest first)
-            files_info.sort(key=lambda x: x[0])
-            
-            # Remove files until we reach target size
-            removed_count = 0
-            for created_at, file_id, file_format, file_size in files_info:
-                if self.stats['total_size_bytes'] <= target_size_bytes:
-                    break
+            # Get files sorted by creation time (oldest first) with their sizes
+            async with self._metadata_db.execute("""
+                SELECT file_id, file_format, size, created_at 
+                FROM cache_metadata 
+                ORDER BY created_at ASC
+            """) as cursor:
+                files_to_delete = []
+                total_to_delete = current_size - target_size_bytes
+                accumulated_size = 0
                 
-                if await self.delete_file(file_id, file_format):
-                    removed_count += 1
+                async for row in cursor:
+                    file_id, file_format, file_size, created_at = row
+                    files_to_delete.append((file_id, file_format))
+                    accumulated_size += file_size
+                    if accumulated_size >= total_to_delete:
+                        break
+            
+            if not files_to_delete:
+                return 0
+            
+            # Process deletions in parallel batches with semaphore
+            semaphore = asyncio.Semaphore(max_workers)
+            
+            async def delete_with_limit(file_id, file_format):
+                async with semaphore:
+                    return await self.delete_file(file_id, file_format)
+            
+            tasks = [delete_with_limit(fid, fmt) for fid, fmt in files_to_delete]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            removed_count = sum(1 for r in results if r is True)
             
             if removed_count > 0:
                 logger.info(f"Removed {removed_count} oldest files to reduce cache size")
@@ -300,137 +370,96 @@ class DiskCacheService:
             return 0
     
     async def get_cache_stats(self) -> Dict[str, Any]:
-        """Get disk cache statistics."""
-        import asyncio
-        
-        # Recalculate stats from actual files
-        total_files = 0
-        total_size_bytes = 0
-        file_types = defaultdict(int)
-        
-        # Limit the number of files to process to avoid timeout (similar to Redis)
-        max_files_to_process = 2000
-        
-        # Optimized: scan only known format directories using os.scandir (faster than iterdir)
-        def _calculate_stats():
-            nonlocal total_files, total_size_bytes, file_types
-            
-            # Known formats from cache structure
-            known_formats = ['lottie', 'webp', 'tgs', 'png', 'jpg', 'jpeg', 'webm']
-            
-            files_processed = 0
-            format_dirs_found = False
-            
-            # Process files directly (single pass) - stop when we hit the limit
-            # This is much faster than counting all files first
-            for format_name in known_formats:
-                if files_processed >= max_files_to_process:
-                    break
-                    
-                format_dir = self.cache_dir / format_name
-                if format_dir.exists() and format_dir.is_dir():
-                    format_dirs_found = True
-                    try:
-                        # Use os.scandir for better performance
-                        with os.scandir(format_dir) as entries:
-                            for entry in entries:
-                                if files_processed >= max_files_to_process:
-                                    break
-                                    
-                                if entry.is_file() and not entry.name.endswith('.meta'):
-                                    total_files += 1
-                                    files_processed += 1
-                                    try:
-                                        # Use entry.stat() which is faster than Path.stat()
-                                        stat_info = entry.stat()
-                                        total_size_bytes += stat_info.st_size
-                                    except (OSError, FileNotFoundError):
-                                        # File might have been deleted
-                                        continue
-                                    
-                                    # Extract file type from extension
-                                    file_extension = Path(entry.name).suffix.lower().lstrip('.')
-                                    if file_extension:
-                                        file_types[file_extension] += 1
-                    except (OSError, PermissionError) as e:
-                        logger.warning(f"Error scanning format directory {format_name}: {e}")
-                        continue
-            
-            # Fallback: if no format directories found, scan root (backward compatibility)
-            if not format_dirs_found and files_processed < max_files_to_process:
-                try:
-                    # Use os.scandir for better performance
-                    with os.scandir(self.cache_dir) as entries:
-                        for entry in entries:
-                            if files_processed >= max_files_to_process:
-                                break
-                                
-                            if entry.is_file() and not entry.name.endswith('.meta'):
-                                total_files += 1
-                                files_processed += 1
-                                try:
-                                    stat_info = entry.stat()
-                                    total_size_bytes += stat_info.st_size
-                                except (OSError, FileNotFoundError):
-                                    continue
-                                
-                                file_extension = Path(entry.name).suffix.lower().lstrip('.')
-                                if file_extension:
-                                    file_types[file_extension] += 1
-                except (OSError, PermissionError) as e:
-                    logger.warning(f"Error scanning cache directory: {e}")
-            
-            # If we hit the limit, log a warning
-            if files_processed >= max_files_to_process:
-                logger.warning(f"Processed only {max_files_to_process} files for disk cache stats (may be incomplete)")
-            
-            return total_files, total_size_bytes, dict(file_types)
-        
-        # Run file system operations in thread pool to avoid blocking event loop
+        """Get disk cache statistics from database."""
         try:
-            total_files, total_size_bytes, file_types = await asyncio.to_thread(_calculate_stats)
-        except AttributeError:
-            # Fallback for Python < 3.9
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                # Fallback if no running loop (shouldn't happen in async context)
-                loop = asyncio.get_event_loop()
-            total_files, total_size_bytes, file_types = await loop.run_in_executor(None, _calculate_stats)
-        
-        self.stats['total_files'] = total_files
-        self.stats['total_size_bytes'] = total_size_bytes
-        
-        # Calculate additional stats
-        cache_hit_rate = 0
-        if self.stats['cache_hits'] + self.stats['cache_misses'] > 0:
-            cache_hit_rate = (self.stats['cache_hits'] / (self.stats['cache_hits'] + self.stats['cache_misses'])) * 100
-        
-        return {
-            'total_files': total_files,
-            'total_size_bytes': total_size_bytes,
-            'total_size_mb': round(total_size_bytes / (1024 * 1024), 2),
-            'cache_hits': self.stats['cache_hits'],
-            'cache_misses': self.stats['cache_misses'],
-            'cache_hit_rate': round(cache_hit_rate, 1),
-            'files_created': self.stats['files_created'],
-            'files_deleted': self.stats['files_deleted'],
-            'cleanup_runs': self.stats['cleanup_runs'],
-            'last_cleanup': self.stats['last_cleanup'],
-            'max_size_mb': self.max_cache_size_mb,
-            'ttl_days': self.ttl_days,
-            'file_types': file_types,
-        }
+            await self._ensure_db_connection()
+            
+            # Fast query from database using SQL aggregations
+            async with self._metadata_db.execute("""
+                SELECT 
+                    COUNT(*) as total_files,
+                    COALESCE(SUM(size), 0) as total_size_bytes,
+                    file_format,
+                    COUNT(*) as format_count
+                FROM cache_metadata
+                GROUP BY file_format
+            """) as cursor:
+                rows = await cursor.fetchall()
+            
+            total_files = 0
+            total_size_bytes = 0
+            file_types = {}
+            
+            for row in rows:
+                count, size, file_format, format_count = row
+                total_files += count
+                total_size_bytes += size or 0
+                file_types[file_format] = format_count
+            
+            # Update in-memory stats
+            self.stats['total_files'] = total_files
+            self.stats['total_size_bytes'] = total_size_bytes
+            
+            # Calculate additional stats
+            cache_hit_rate = 0
+            if self.stats['cache_hits'] + self.stats['cache_misses'] > 0:
+                cache_hit_rate = (self.stats['cache_hits'] / (self.stats['cache_hits'] + self.stats['cache_misses'])) * 100
+            
+            return {
+                'total_files': total_files,
+                'total_size_bytes': total_size_bytes,
+                'total_size_mb': round(total_size_bytes / (1024 * 1024), 2),
+                'cache_hits': self.stats['cache_hits'],
+                'cache_misses': self.stats['cache_misses'],
+                'cache_hit_rate': round(cache_hit_rate, 1),
+                'files_created': self.stats['files_created'],
+                'files_deleted': self.stats['files_deleted'],
+                'cleanup_runs': self.stats['cleanup_runs'],
+                'last_cleanup': self.stats['last_cleanup'],
+                'max_size_mb': self.max_cache_size_mb,
+                'ttl_days': self.ttl_days,
+                'file_types': file_types,
+            }
+        except Exception as e:
+            logger.error(f"Error getting cache stats: {e}")
+            # Return fallback stats
+            return {
+                'total_files': self.stats['total_files'],
+                'total_size_bytes': self.stats['total_size_bytes'],
+                'total_size_mb': round(self.stats['total_size_bytes'] / (1024 * 1024), 2),
+                'cache_hits': self.stats['cache_hits'],
+                'cache_misses': self.stats['cache_misses'],
+                'cache_hit_rate': 0,
+                'files_created': self.stats['files_created'],
+                'files_deleted': self.stats['files_deleted'],
+                'cleanup_runs': self.stats['cleanup_runs'],
+                'last_cleanup': self.stats['last_cleanup'],
+                'max_size_mb': self.max_cache_size_mb,
+                'ttl_days': self.ttl_days,
+                'file_types': {},
+            }
     
     async def clear_cache(self) -> int:
         """Clear all files from disk cache."""
         try:
+            await self._ensure_db_connection()
+            
+            # Get all files from database
+            async with self._metadata_db.execute("""
+                SELECT file_id, file_format FROM cache_metadata
+            """) as cursor:
+                all_files = await cursor.fetchall()
+            
             removed_count = 0
             
-            for file_path in self.cache_dir.glob("*"):
-                if file_path.is_file():
-                    file_path.unlink()
+            # Delete all files
+            for file_id, file_format in all_files:
+                if await self.delete_file(file_id, file_format):
                     removed_count += 1
+            
+            # Clear database
+            await self._metadata_db.execute("DELETE FROM cache_metadata")
+            await self._metadata_db.commit()
             
             # Reset statistics
             self.stats = {
