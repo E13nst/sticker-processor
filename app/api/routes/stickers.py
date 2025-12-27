@@ -4,7 +4,7 @@ from fastapi.responses import StreamingResponse
 
 from app.services.cache_manager import CacheManager
 from app.handlers.sticker_handler import StickerHandler
-from app.models.requests import CombineStickersRequest, CombineStickerSetRequest, GenerateStickerRequest
+from app.models.requests import CombineStickersRequest, CombineStickerSetRequest, GenerateStickerRequest, SnapstixGenerateRequest
 
 
 def create_sticker_router(cache_manager: CacheManager) -> APIRouter:
@@ -201,6 +201,52 @@ def create_sticker_router(cache_manager: CacheManager) -> APIRouter:
     async def generate_sticker(request: GenerateStickerRequest):
         """Generate a sticker image using OpenAI API."""
         return await handler.generate_sticker(request)
+    
+    @router.post(
+        "/stickers/snapstix/generate",
+        summary="Generate Sticker via Snapstix",
+        description="""
+        Generate a sticker image using Snapstix/RunPod API based on a text prompt.
+        
+        **Features:**
+        - Sends generation request to RunPod API
+        - Uses template configuration from example.json
+        - Returns job ID and status from RunPod API
+        - Supports callback URL for receiving generated image
+        
+        **Parameters:**
+        - `prompt`: Text description of the sticker to generate (required)
+        - `callback_url`: URL to receive callback with generated image (required)
+        - `processing_id`: Processing job ID (UUID, optional - will be generated if not provided)
+        
+        **Note:** 
+        - The actual image generation happens asynchronously on RunPod
+        - The generated image will be sent to the provided callback_url when ready
+        - This endpoint returns immediately with job information
+        
+        **Response:**
+        - Returns JSON response from RunPod API (typically contains job ID and status)
+        - Headers include processing time
+        """,
+        tags=["Stickers"],
+        responses={
+            200: {
+                "description": "RunPod API response with job information",
+                "headers": {
+                    "X-Processing-Time-Ms": {"description": "Processing time in milliseconds"},
+                    "Content-Type": {"description": "application/json"}
+                }
+            },
+            400: {"description": "Bad request (invalid prompt, callback_url, or template error)"},
+            502: {"description": "RunPod API server error"},
+            503: {"description": "RunPod API rate limited or service unavailable"},
+            504: {"description": "Request to RunPod API timed out"},
+            500: {"description": "Internal server error"}
+        }
+    )
+    async def generate_snapstix_sticker(request: SnapstixGenerateRequest):
+        """Generate a sticker using Snapstix/RunPod API."""
+        return await handler.generate_snapstix_sticker(request)
     
     return router
 

@@ -3,20 +3,22 @@ import time
 import logging
 import asyncio
 import io
+import aiohttp
 from typing import Optional, Tuple, List
 from fastapi import HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 
 from app.config import settings
 from app.services.cache_manager import CacheManager
 from app.services.telegram_enhanced import TelegramAPIError
 from app.services.openai_service import OpenAIService
+from app.services.runpod_service import RunPodService
 from app.services.image_combiner import (
     image_from_bytes,
     combine_images,
     image_to_webp
 )
-from app.models.requests import GenerateStickerRequest
+from app.models.requests import GenerateStickerRequest, SnapstixGenerateRequest
 from app.utils.error_handler import handle_telegram_api_error, handle_timeout_error, handle_generic_error
 from app.utils.logging_helpers import log_performance
 from app.utils.response_builder import build_sticker_response_headers
@@ -31,6 +33,7 @@ class StickerHandler:
         """Initialize sticker handler with cache manager."""
         self.cache_manager = cache_manager
         self._openai_service = None
+        self._runpod_service = None
     
     @property
     def openai_service(self) -> OpenAIService:
@@ -38,6 +41,13 @@ class StickerHandler:
         if self._openai_service is None:
             self._openai_service = OpenAIService()
         return self._openai_service
+    
+    @property
+    def runpod_service(self) -> RunPodService:
+        """Lazy initialization of RunPod service."""
+        if self._runpod_service is None:
+            self._runpod_service = RunPodService()
+        return self._runpod_service
     
     async def get_sticker(
         self, 
@@ -566,6 +576,91 @@ class StickerHandler:
         except Exception as e:
             elapsed_time = int((time.time() - start_time) * 1000)
             logger.error(f"Error generating sticker: {e} (time: {elapsed_time}ms)")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Internal server error while generating sticker: {str(e)}"
+            )
+    
+    async def generate_snapstix_sticker(
+        self,
+        request: SnapstixGenerateRequest
+    ) -> JSONResponse:
+        """
+        Generate a sticker using Snapstix/RunPod API.
+        
+        Args:
+            request: SnapstixGenerateRequest with prompt, callback_url, and optional processing_id
+            
+        Returns:
+            JSON response from RunPod API (typically contains job ID and status)
+            
+        Raises:
+            HTTPException: On errors (400, 500, 502, 503, 504)
+        """
+        start_time = time.time()
+        
+        try:
+            # Get RunPod service
+            runpod_service = self.runpod_service
+            
+            # Call RunPod API (async method)
+            response_data = await runpod_service.generate_sticker(
+                prompt=request.prompt,
+                callback_url=request.callback_url,
+                processing_id=request.processing_id
+            )
+            
+            processing_time = int((time.time() - start_time) * 1000)
+            logger.info(
+                f"Snapstix sticker generation request sent: prompt='{request.prompt[:50]}...', "
+                f"processing_id={request.processing_id or 'generated'}, time={processing_time}ms"
+            )
+            
+            # Return JSON response from RunPod API
+            return JSONResponse(
+                content=response_data,
+                headers={
+                    "X-Processing-Time-Ms": str(processing_time),
+                    "Content-Type": "application/json"
+                }
+            )
+            
+        except ValueError as e:
+            elapsed_time = int((time.time() - start_time) * 1000)
+            logger.error(f"Validation error generating Snapstix sticker: {e} (time: {elapsed_time}ms)")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to generate sticker: {str(e)}"
+            )
+        except aiohttp.ClientResponseError as e:
+            elapsed_time = int((time.time() - start_time) * 1000)
+            logger.error(f"RunPod API error generating Snapstix sticker: {e} (time: {elapsed_time}ms)")
+            # Map HTTP errors appropriately
+            if e.status >= 500:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"RunPod API server error: {str(e)}"
+                )
+            elif e.status == 429:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"RunPod API rate limited: {str(e)}"
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"RunPod API client error: {str(e)}"
+                )
+        except asyncio.TimeoutError:
+            elapsed_time = int((time.time() - start_time) * 1000)
+            logger.error(f"Timeout generating Snapstix sticker (time: {elapsed_time}ms)")
+            raise HTTPException(
+                status_code=504,
+                detail="Request to RunPod API timed out. Please try again later."
+            )
+        except Exception as e:
+            elapsed_time = int((time.time() - start_time) * 1000)
+            logger.error(f"Error generating Snapstix sticker: {e} (time: {elapsed_time}ms)")
             raise HTTPException(
                 status_code=500,
                 detail=f"Internal server error while generating sticker: {str(e)}"

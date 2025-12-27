@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     # OpenAI Configuration
     openai_api_key: Optional[str] = None
     
+    # RunPod API Configuration
+    runpod_api_url: str = "https://api.runpod.ai/v2/5ecx4u5xss6vi6/run"
+    runpod_api_token: Optional[str] = None  # Bearer token for RunPod API authorization
+    
     # Redis Configuration
     redis_enabled: bool = True  # Enable/disable Redis cache entirely
     redis_host: str = "localhost"

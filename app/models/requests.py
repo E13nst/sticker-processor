@@ -178,3 +178,30 @@ class GenerateStickerRequest(BaseModel):
         
         return v
 
+
+class SnapstixGenerateRequest(BaseModel):
+    """Request model for generating a sticker using Snapstix/RunPod."""
+    
+    prompt: str = Field(..., min_length=1, max_length=1000, description="Text prompt for sticker generation")
+    callback_url: str = Field(..., min_length=1, description="URL to receive callback with generated image")
+    processing_id: Optional[str] = Field(default=None, description="Processing job ID (UUID). If not provided, will be generated automatically")
+    
+    @field_validator('prompt')
+    @classmethod
+    def validate_prompt(cls, v):
+        """Validate prompt format."""
+        if not v or not v.strip():
+            raise ValueError("Prompt cannot be empty")
+        return v.strip()
+    
+    @field_validator('callback_url')
+    @classmethod
+    def validate_callback_url(cls, v):
+        """Validate callback URL format."""
+        if not v or not v.strip():
+            raise ValueError("Callback URL cannot be empty")
+        # Basic URL validation
+        if not v.startswith(('http://', 'https://')):
+            raise ValueError("Callback URL must start with http:// or https://")
+        return v.strip()
+
