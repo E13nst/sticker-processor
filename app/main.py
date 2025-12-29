@@ -5,8 +5,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.services.cache_manager import CacheManager
+from app.services.webhook_db import WebhookDBService
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.api.routes import health, stickers, cache, stats
+from app.api.routes import health, stickers, cache, stats, snapstix
 
 # Configure logging
 logging.basicConfig(
@@ -26,6 +27,9 @@ if not settings.openai_api_key:
 # Initialize cache manager
 cache_manager = CacheManager()
 
+# Initialize webhook database service
+webhook_db = WebhookDBService()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -37,10 +41,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Cache manager connection failed: {e}. Service will work with limited functionality.")
     
+    try:
+        await webhook_db.connect()
+        logger.info("Webhook database connected")
+    except Exception as e:
+        logger.warning(f"Webhook database connection failed: {e}")
+    
     yield
     
     # Shutdown
     await cache_manager.disconnect()
+    await webhook_db.disconnect()
     logger.info("Sticker Processor Service stopped")
 
 
@@ -103,6 +114,7 @@ app.include_router(health.router)
 app.include_router(stickers.create_sticker_router(cache_manager))
 app.include_router(cache.create_cache_router(cache_manager))
 app.include_router(stats.create_stats_router(cache_manager))
+app.include_router(snapstix.create_snapstix_router(webhook_db))
 
 
 if __name__ == "__main__":
