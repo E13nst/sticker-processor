@@ -1,5 +1,5 @@
 """Cache management routes."""
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from app.services.cache_manager import CacheManager
 from app.handlers.cache_handler import CacheHandler
@@ -82,6 +82,30 @@ def create_cache_router(cache_manager: CacheManager) -> APIRouter:
     async def get_disk_stats():
         """Get disk cache statistics."""
         return await handler.get_disk_stats()
+
+    @router.get(
+        "/cache/disk/diagnostics",
+        summary="Disk Cache Diagnostics",
+        description="""
+        Detailed disk cache diagnostics for debugging production issues:
+        
+        - Which process (pid/hostname) you're hitting
+        - Which cache directory and which SQLite metadata DB is being used
+        - How many rows exist in metadata DB (and by format)
+        - Optional best-effort filesystem scan to estimate how many cache files exist on disk
+        """,
+        tags=["Cache Management - Disk"],
+        responses={
+            200: {"description": "Disk cache diagnostics"},
+            503: {"description": "Disk cache is not enabled"}
+        }
+    )
+    async def get_disk_diagnostics(
+        include_fs: bool = Query(False, description="Include a capped filesystem scan"),
+        fs_scan_limit: int = Query(5000, ge=0, le=200000, description="Max files to scan when include_fs=true"),
+    ):
+        """Get disk cache diagnostics."""
+        return await handler.get_disk_diagnostics(include_fs=include_fs, fs_scan_limit=fs_scan_limit)
     
     @router.delete(
         "/cache/disk/clear",

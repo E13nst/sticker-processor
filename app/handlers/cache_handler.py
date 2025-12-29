@@ -88,6 +88,20 @@ class CacheHandler:
         except Exception as e:
             logger.error(f"Error getting disk cache stats: {e}")
             return {"error": str(e)}
+
+    async def get_disk_diagnostics(self, include_fs: bool = False, fs_scan_limit: int = 5000) -> Dict[str, Any]:
+        """Get detailed disk cache diagnostics (DB path, process info, optional FS scan)."""
+        if not settings.disk_cache_enabled:
+            return {"error": "Disk cache is not enabled"}
+
+        try:
+            return await self.cache_manager.disk_cache_service.get_diagnostics(
+                include_fs=include_fs,
+                fs_scan_limit=fs_scan_limit
+            )
+        except Exception as e:
+            logger.error(f"Error getting disk cache diagnostics: {e}")
+            return {"error": str(e)}
     
     async def clear_disk_cache(self) -> Dict[str, Any]:
         """Clear all disk cache."""

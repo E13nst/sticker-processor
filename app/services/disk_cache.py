@@ -7,6 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime, timedelta
+import socket
 import aiofiles
 import aiosqlite
 
@@ -41,6 +42,8 @@ class DiskCacheService:
             'files_deleted': 0,
             'cleanup_runs': 0,
             'last_cleanup': None,
+            'last_error': None,
+            'last_error_at': None,
         }
         
         logger.info(f"Disk cache initialized: {self.cache_dir}")
@@ -186,6 +189,8 @@ class DiskCacheService:
             return True
             
         except Exception as e:
+            self.stats['last_error'] = str(e)
+            self.stats['last_error_at'] = datetime.now().isoformat()
             logger.error(f"Error storing file {file_id} in disk cache: {e}")
             return False
     
@@ -233,6 +238,8 @@ class DiskCacheService:
             return content
             
         except Exception as e:
+            self.stats['last_error'] = str(e)
+            self.stats['last_error_at'] = datetime.now().isoformat()
             logger.error(f"Error retrieving file {file_id} from disk cache: {e}")
             self.stats['cache_misses'] += 1
             return None
@@ -267,6 +274,8 @@ class DiskCacheService:
             return True
             
         except Exception as e:
+            self.stats['last_error'] = str(e)
+            self.stats['last_error_at'] = datetime.now().isoformat()
             logger.error(f"Error deleting file {file_id} from disk cache: {e}")
             return False
     
@@ -309,6 +318,8 @@ class DiskCacheService:
             return removed_count
             
         except Exception as e:
+            self.stats['last_error'] = str(e)
+            self.stats['last_error_at'] = datetime.now().isoformat()
             logger.error(f"Error during disk cache cleanup: {e}")
             return 0
     
@@ -366,8 +377,150 @@ class DiskCacheService:
             return removed_count
             
         except Exception as e:
+            self.stats['last_error'] = str(e)
+            self.stats['last_error_at'] = datetime.now().isoformat()
             logger.error(f"Error during disk cache size cleanup: {e}")
             return 0
+
+    def _runtime_debug_info(self) -> Dict[str, Any]:
+        """Runtime debug info (safe to expose via diagnostics endpoints)."""
+        db_path_str = str(self._db_path) if self._db_path else None
+        cache_dir_str = str(self.cache_dir)
+        hostname = None
+        try:
+            hostname = socket.gethostname()
+        except Exception:
+            hostname = None
+        pid = None
+        try:
+            pid = os.getpid()
+        except Exception:
+            pid = None
+
+        db_exists = False
+        db_size_bytes = None
+        db_mtime = None
+        db_writable = None
+        if self._db_path:
+            try:
+                db_exists = self._db_path.exists()
+                if db_exists:
+                    stat = self._db_path.stat()
+                    db_size_bytes = stat.st_size
+                    db_mtime = datetime.fromtimestamp(stat.st_mtime).isoformat()
+                db_writable = os.access(str(self._db_path), os.W_OK)
+            except Exception:
+                # Keep diagnostics best-effort; don't fail stats if filesystem access fails
+                pass
+
+        return {
+            "hostname": hostname,
+            "pid": pid,
+            "disk_cache_dir_setting": settings.disk_cache_dir,
+            "cache_dir": cache_dir_str,
+            "metadata_db_path": db_path_str,
+            "metadata_db_exists": db_exists,
+            "metadata_db_size_bytes": db_size_bytes,
+            "metadata_db_mtime": db_mtime,
+            "metadata_db_writable": db_writable,
+        }
+
+    def _fs_scan_counts(self, scan_limit: int = 5000) -> Dict[str, Any]:
+        """Best-effort filesystem scan to estimate how many cached files exist on disk.
+
+        We cap the scan for safety on large caches.
+        """
+        formats = ['lottie', 'webp', 'png', 'jpg', 'webm']
+        counts_by_format: Dict[str, int] = {f: 0 for f in formats}
+        bytes_by_format: Dict[str, int] = {f: 0 for f in formats}
+        scanned_files = 0
+        truncated = False
+
+        try:
+            for fmt in formats:
+                fmt_dir = self.cache_dir / fmt
+                if not fmt_dir.exists() or not fmt_dir.is_dir():
+                    continue
+                for root, _dirs, files in os.walk(fmt_dir):
+                    for name in files:
+                        if scanned_files >= scan_limit:
+                            truncated = True
+                            break
+                        # We expect files like "<md5>.<fmt>"
+                        if not name.endswith(f".{fmt}"):
+                            continue
+                        p = Path(root) / name
+                        try:
+                            counts_by_format[fmt] += 1
+                            bytes_by_format[fmt] += p.stat().st_size
+                            scanned_files += 1
+                        except OSError:
+                            # Ignore disappearing/inaccessible files
+                            continue
+                    if truncated:
+                        break
+                if truncated:
+                    break
+        except Exception:
+            # Best-effort
+            pass
+
+        total_files = sum(counts_by_format.values())
+        total_size_bytes = sum(bytes_by_format.values())
+
+        return {
+            "scan_limit": scan_limit,
+            "scanned_files": scanned_files,
+            "truncated": truncated,
+            "fs_total_files_estimate": total_files,
+            "fs_total_size_bytes_estimate": total_size_bytes,
+            "fs_total_size_mb_estimate": round(total_size_bytes / (1024 * 1024), 2),
+            "fs_file_types_estimate": {k: v for k, v in counts_by_format.items() if v > 0},
+        }
+
+    async def get_diagnostics(self, include_fs: bool = False, fs_scan_limit: int = 5000) -> Dict[str, Any]:
+        """Return detailed diagnostics to debug cache/metadata mismatches."""
+        await self._ensure_db_connection()
+
+        # DB-level snapshot (fast)
+        async with self._metadata_db.execute("SELECT COUNT(*) FROM cache_metadata") as cursor:
+            row = await cursor.fetchone()
+            db_total_rows = row[0] if row else 0
+
+        async with self._metadata_db.execute("""
+            SELECT file_format, COUNT(*) as cnt, COALESCE(SUM(size), 0) as total_size
+            FROM cache_metadata
+            GROUP BY file_format
+        """) as cursor:
+            by_format = await cursor.fetchall()
+
+        db_file_types = {fmt: cnt for (fmt, cnt, _size) in by_format}
+        db_total_size_bytes = sum((size or 0) for (_fmt, _cnt, size) in by_format)
+
+        diagnostics: Dict[str, Any] = {
+            "debug": self._runtime_debug_info(),
+            "db": {
+                "total_rows": db_total_rows,
+                "total_size_bytes": db_total_size_bytes,
+                "total_size_mb": round(db_total_size_bytes / (1024 * 1024), 2),
+                "file_types": db_file_types,
+            },
+            "in_memory_counters": {
+                "cache_hits": self.stats.get("cache_hits", 0),
+                "cache_misses": self.stats.get("cache_misses", 0),
+                "files_created": self.stats.get("files_created", 0),
+                "files_deleted": self.stats.get("files_deleted", 0),
+                "cleanup_runs": self.stats.get("cleanup_runs", 0),
+                "last_cleanup": self.stats.get("last_cleanup"),
+                "last_error": self.stats.get("last_error"),
+                "last_error_at": self.stats.get("last_error_at"),
+            }
+        }
+
+        if include_fs:
+            diagnostics["fs_scan"] = self._fs_scan_counts(scan_limit=fs_scan_limit)
+
+        return diagnostics
     
     async def get_cache_stats(self) -> Dict[str, Any]:
         """Get disk cache statistics from database."""
@@ -419,6 +572,9 @@ class DiskCacheService:
                 'max_size_mb': self.max_cache_size_mb,
                 'ttl_days': self.ttl_days,
                 'file_types': file_types,
+                'debug': self._runtime_debug_info(),
+                'last_error': self.stats.get('last_error'),
+                'last_error_at': self.stats.get('last_error_at'),
             }
         except Exception as e:
             logger.error(f"Error getting cache stats: {e}")
@@ -437,6 +593,9 @@ class DiskCacheService:
                 'max_size_mb': self.max_cache_size_mb,
                 'ttl_days': self.ttl_days,
                 'file_types': {},
+                'debug': self._runtime_debug_info(),
+                'last_error': self.stats.get('last_error'),
+                'last_error_at': self.stats.get('last_error_at'),
             }
     
     async def clear_cache(self) -> int:
