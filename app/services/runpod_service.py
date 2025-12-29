@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import ssl
 import uuid
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -103,11 +104,35 @@ class RunPodService:
         return payload
     
     async def _get_session(self) -> aiohttp.ClientSession:
-        """Get or create aiohttp session."""
+        """Get or create aiohttp session with SSL support."""
         if self._session is None or self._session.closed:
-            timeout = ClientTimeout(total=30)  # 30 seconds timeout
-            self._session = aiohttp.ClientSession(timeout=timeout)
-            logger.debug("Created aiohttp session for RunPod API")
+            # Create SSL context that works in restricted environments (like Amvera)
+            ssl_context = ssl.create_default_context()
+            # On some hosting providers, SSL verification might need to be more lenient
+            # Uncomment the following lines if you get SSL certificate errors:
+            # ssl_context.check_hostname = False
+            # ssl_context.verify_mode = ssl.CERT_NONE
+            
+            # Configure connector with SSL support (similar to telegram_enhanced.py)
+            connector = aiohttp.TCPConnector(
+                limit=100,  # Connection pool limit
+                limit_per_host=10,  # Connections per host
+                ttl_dns_cache=300,  # DNS cache TTL
+                keepalive_timeout=30,
+                force_close=False,
+                enable_cleanup_closed=True,
+                ssl=ssl_context,  # Use SSL context
+                family=0,  # Use both IPv4 and IPv6 (0 = auto)
+                use_dns_cache=True,
+                resolver=aiohttp.resolver.DefaultResolver()  # Explicit DNS resolver
+            )
+            
+            timeout = ClientTimeout(total=30, connect=10, sock_read=10)
+            self._session = aiohttp.ClientSession(
+                connector=connector,
+                timeout=timeout
+            )
+            logger.debug("Created aiohttp session for RunPod API with SSL support")
         
         return self._session
     
@@ -242,6 +267,21 @@ class RunPodService:
                 )
                 return response_data
                     
+        except aiohttp.ClientConnectorError as e:
+            error_msg = str(e)
+            if "ssl" in error_msg.lower() or "certificate" in error_msg.lower():
+                logger.error(
+                    f"SSL/TLS connection error to RunPod API: {e}. "
+                    "This might be due to SSL certificate issues on the hosting provider."
+                )
+            elif "Cannot connect to host" in error_msg:
+                logger.error(
+                    f"Cannot connect to RunPod API: {e}. "
+                    "Check if outgoing HTTPS connections are allowed on this hosting provider."
+                )
+            else:
+                logger.error(f"Connection error to RunPod API: {e}")
+            raise
         except aiohttp.ClientError as e:
             logger.error(f"HTTP client error calling RunPod API: {e}")
             raise
