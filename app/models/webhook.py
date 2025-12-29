@@ -17,6 +17,10 @@ class SnapstixWebhookRequest(BaseModel):
     img_url: Optional[str] = Field(default=None, description="Image URL")
     sticker_url: Optional[str] = Field(default=None, description="Sticker URL")
     error_data: Optional[dict] = Field(default=None, description="Error data if any")
+    
+    class Config:
+        # Allow extra fields to be ignored (in case Snapstix sends additional data)
+        extra = "ignore"
 
 
 class WebhookRecord(BaseModel):

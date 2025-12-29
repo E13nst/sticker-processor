@@ -1,7 +1,10 @@
 import logging
+import json
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.services.cache_manager import CacheManager
@@ -108,6 +111,34 @@ app.add_middleware(
 if settings.rate_limit_enabled:
     app.add_middleware(RateLimitMiddleware, enabled=True)
     logger.info("Rate limiting enabled")
+
+
+# Add exception handler for validation errors
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Log validation errors with request body for debugging."""
+    try:
+        body = await request.body()
+        body_str = body.decode('utf-8') if body else ""
+        try:
+            body_json = json.loads(body_str) if body_str else {}
+            logger.error(f"Validation error on {request.url.path}: {exc.errors()}")
+            logger.error(f"Request body: {json.dumps(body_json, indent=2)}")
+        except json.JSONDecodeError:
+            logger.error(f"Validation error on {request.url.path}: {exc.errors()}")
+            logger.error(f"Request body (raw, first 500 chars): {body_str[:500]}")
+        
+        return JSONResponse(
+            status_code=400,
+            content={"detail": exc.errors(), "body": json.loads(body_str) if body_str else None}
+        )
+    except Exception as e:
+        logger.error(f"Error in validation exception handler: {e}")
+        return JSONResponse(
+            status_code=400,
+            content={"detail": exc.errors()}
+        )
+
 
 # Register routes
 app.include_router(health.router)

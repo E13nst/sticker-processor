@@ -1,8 +1,11 @@
 """Snapstix webhook routes."""
 import logging
+import json
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError
 from pathlib import Path
 
 from app.models.webhook import SnapstixWebhookRequest
@@ -31,6 +34,10 @@ def create_snapstix_router(webhook_db: WebhookDBService) -> APIRouter:
     async def receive_snapstix_webhook(webhook_data: SnapstixWebhookRequest):
         """Receive and save webhook data from Snapstix."""
         try:
+            # Log incoming request for debugging
+            logger.info(f"Webhook received - job_id: {webhook_data.job_id}, status: {webhook_data.status}")
+            logger.debug(f"Webhook payload: {webhook_data.model_dump_json(indent=2)}")
+            
             # Convert Pydantic model to dict
             data_dict = webhook_data.model_dump()
             
