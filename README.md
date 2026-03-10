@@ -27,6 +27,9 @@ Python microservice for processing and caching Telegram stickers with format con
 ## API Endpoints
 
 - `GET /stickers/{file_id}` - Get sticker file
+- `POST /stickers/wavespeed/generate` - Submit async WaveSpeed sticker generation
+- `GET /stickers/wavespeed/{file_id}` - Download/poll generated WaveSpeed sticker
+- `POST /stickers/wavespeed/save-to-set` - Save generated WaveSpeed sticker to Telegram set
 - `GET /health` - Health check
 - `GET /cache/stats` - Cache statistics
 - `GET /api/stats` - Telegram API usage statistics
@@ -194,4 +197,5 @@ See [TELEGRAM_API_LOGGING.md](TELEGRAM_API_LOGGING.md) for details on logging ca
 - [PERFORMANCE_OPTIMIZATION_GUIDE.md](PERFORMANCE_OPTIMIZATION_GUIDE.md) - Performance tuning and optimization guide
 - [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md) - Production deployment instructions
 - [TELEGRAM_API_LOGGING.md](TELEGRAM_API_LOGGING.md) - Telegram API logging configuration
+- [WAVESPEED_INTEGRATION.md](WAVESPEED_INTEGRATION.md) - Integration guide for async WaveSpeed endpoints
 - [tests/README.md](tests/README.md) - Comprehensive testing documentation

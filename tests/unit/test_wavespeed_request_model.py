@@ -1,7 +1,7 @@
 """Unit tests for WaveSpeed request model."""
 import pytest
 
-from app.models.requests import WaveSpeedGenerateRequest
+from app.models.requests import WaveSpeedGenerateRequest, WaveSpeedSaveToSetRequest
 
 
 @pytest.mark.unit
@@ -72,4 +72,38 @@ class TestWaveSpeedGenerateRequest:
         )
         assert req.source_image_base64 is None
         assert req.source_image_url is None
+
+
+@pytest.mark.unit
+class TestWaveSpeedSaveToSetRequest:
+    def test_valid_payload(self):
+        req = WaveSpeedSaveToSetRequest(
+            file_id="ws_abc123",
+            user_id=123456,
+            name="my_set_by_bot",
+            title="My Sticker Set",
+            emoji="😀",
+        )
+        assert req.file_id.startswith("ws_")
+        assert req.wait_timeout_sec == 60
+        assert req.emoji == "😀"
+
+    def test_default_emoji_when_not_provided(self):
+        req = WaveSpeedSaveToSetRequest(
+            file_id="ws_abc123",
+            user_id=123456,
+            name="my_set_by_bot",
+            title="My Sticker Set",
+        )
+        assert req.emoji == "😀"
+
+    def test_invalid_file_id(self):
+        with pytest.raises(ValueError, match="must start with 'ws_'"):
+            WaveSpeedSaveToSetRequest(
+                file_id="abc123",
+                user_id=123456,
+                name="my_set_by_bot",
+                title="My Sticker Set",
+                emoji="😀",
+            )
 

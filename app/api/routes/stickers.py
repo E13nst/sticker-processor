@@ -10,6 +10,7 @@ from app.models.requests import (
     GenerateStickerRequest,
     SnapstixGenerateRequest,
     WaveSpeedGenerateRequest,
+    WaveSpeedSaveToSetRequest,
 )
 
 
@@ -284,6 +285,38 @@ def create_sticker_router(cache_manager: CacheManager) -> APIRouter:
     async def get_wavespeed_sticker(file_id: str):
         """Download generated WaveSpeed sticker."""
         return await handler.get_wavespeed_sticker(file_id)
+
+    @router.post(
+        "/stickers/wavespeed/save-to-set",
+        summary="Save Generated WaveSpeed Sticker to Telegram Set",
+        description="""
+        Save a generated `ws_...` sticker into Telegram sticker set.
+
+        **Flow:**
+        - Waits for generation readiness by `file_id`
+        - If sticker set exists: adds sticker with provided emoji
+        - If sticker set does not exist: creates set with `name/title`, then adds first sticker
+
+        **Notes:**
+        - Supports static WEBP stickers only
+        - Requires Telegram `user_id` (sticker set owner)
+        - If generation is still in progress after timeout, returns `202`
+        """,
+        tags=["Stickers"],
+        responses={
+            200: {"description": "Sticker saved to set successfully"},
+            202: {"description": "Generation still pending"},
+            400: {"description": "Bad request"},
+            404: {"description": "WaveSpeed job not found"},
+            410: {"description": "WaveSpeed job expired"},
+            422: {"description": "Unsupported sticker format"},
+            424: {"description": "Generation/post-processing failed"},
+            500: {"description": "Internal server error"},
+        },
+    )
+    async def save_wavespeed_sticker_to_set(request: WaveSpeedSaveToSetRequest):
+        """Save generated WaveSpeed sticker to Telegram sticker set."""
+        return await handler.save_wavespeed_sticker_to_set(request)
     
     @router.post(
         "/stickers/snapstix/generate",

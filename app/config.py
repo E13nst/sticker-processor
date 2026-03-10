@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     
     # Telegram Bot Configuration
     telegram_bot_token: str
+    telegram_bot_username: Optional[str] = None
     
     # OpenAI Configuration
     openai_api_key: Optional[str] = None

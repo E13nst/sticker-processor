@@ -101,3 +101,15 @@ class TestTelegramService:
         assert hasattr(telegram_service, 'get_sticker_set')
         assert callable(telegram_service.get_sticker_set)
 
+    def test_normalize_sticker_set_name_adds_bot_suffix(self, telegram_service):
+        """Ensure set name gets _by_<bot_username> suffix when missing."""
+        telegram_service.bot_username = "stixlybot"
+        normalized = telegram_service._normalize_sticker_set_name("my_pack")
+        assert normalized == "my_pack_by_stixlybot"
+
+    def test_normalize_sticker_set_name_keeps_existing_suffix(self, telegram_service):
+        """Do not duplicate suffix when it is already present."""
+        telegram_service.bot_username = "stixlybot"
+        normalized = telegram_service._normalize_sticker_set_name("my_pack_by_stixlybot")
+        assert normalized == "my_pack_by_stixlybot"
+

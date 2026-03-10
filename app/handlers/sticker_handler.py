@@ -24,7 +24,12 @@ from app.services.image_combiner import (
     combine_images,
     image_to_webp
 )
-from app.models.requests import GenerateStickerRequest, SnapstixGenerateRequest, WaveSpeedGenerateRequest
+from app.models.requests import (
+    GenerateStickerRequest,
+    SnapstixGenerateRequest,
+    WaveSpeedGenerateRequest,
+    WaveSpeedSaveToSetRequest,
+)
 from app.utils.error_handler import handle_telegram_api_error, handle_timeout_error, handle_generic_error
 from app.utils.logging_helpers import log_performance
 from app.utils.response_builder import build_sticker_response_headers
@@ -707,6 +712,69 @@ class StickerHandler:
         processing_time = int((time.time() - start_time) * 1000)
         headers = build_sticker_response_headers(file_id, False, len(content), processing_time)
         return StreamingResponse(io.BytesIO(content), media_type=mime_type, headers=headers)
+
+    async def save_wavespeed_sticker_to_set(self, request: WaveSpeedSaveToSetRequest) -> JSONResponse:
+        """Wait for WaveSpeed sticker readiness and save it to Telegram sticker set."""
+        content, mime_type = await self._await_wavespeed_sticker_ready(
+            file_id=request.file_id,
+            timeout_sec=request.wait_timeout_sec,
+        )
+        if mime_type != "image/webp":
+            raise HTTPException(status_code=422, detail="Only static WEBP stickers are supported for saving to set")
+
+        try:
+            result = await self.cache_manager.telegram_service.save_sticker_to_set(
+                user_id=request.user_id,
+                name=request.name,
+                title=request.title,
+                emoji=request.emoji,
+                sticker_bytes=content,
+            )
+        except TelegramAPIError as te:
+            raise HTTPException(status_code=te.status, detail=te.description)
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "file_id": request.file_id,
+                "set_name": request.name,
+                "title": request.title,
+                "emoji": request.emoji,
+                "result": result,
+                "status": "saved",
+            },
+        )
+
+    async def _await_wavespeed_sticker_ready(self, *, file_id: str, timeout_sec: int) -> Tuple[bytes, str]:
+        """Wait for generated sticker to become ready in cache and return content."""
+        deadline = time.time() + timeout_sec
+        registry = self.wavespeed_registry
+
+        while True:
+            cached = await self.cache_manager.get_sticker_from_cache_only(file_id)
+            if cached:
+                return cached[0], cached[1]
+
+            job = await registry.get_job(file_id)
+            if not job:
+                raise HTTPException(status_code=404, detail="WaveSpeed job not found")
+            if self._is_job_expired(job):
+                raise HTTPException(status_code=410, detail="WaveSpeed job has expired")
+
+            terminal_status = await self._refresh_wavespeed_job_status(file_id, job)
+            if terminal_status == "ready":
+                return await self._materialize_wavespeed_job(file_id)
+            if terminal_status == "failed":
+                updated_job = await registry.get_job(file_id)
+                raise self._map_wavespeed_error_to_http(updated_job)
+
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                raise HTTPException(
+                    status_code=202,
+                    detail={"file_id": file_id, "status": "pending", "message": "Generation is still in progress"},
+                )
+            await asyncio.sleep(min(1.0, remaining))
 
     async def _refresh_wavespeed_job_status(self, file_id: str, job: dict) -> str:
         """Poll WaveSpeed once and synchronize local registry state."""

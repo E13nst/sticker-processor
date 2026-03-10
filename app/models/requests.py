@@ -250,6 +250,38 @@ class WaveSpeedGenerateRequest(BaseModel):
         return self
 
 
+class WaveSpeedSaveToSetRequest(BaseModel):
+    """Request model for saving generated WaveSpeed sticker to Telegram sticker set."""
+
+    file_id: str = Field(..., min_length=4, description="Synthetic WaveSpeed file_id (must start with ws_)")
+    user_id: int = Field(..., gt=0, description="Telegram user_id (owner of sticker set)")
+    name: str = Field(..., min_length=1, max_length=64, description="Sticker set short name")
+    title: str = Field(..., min_length=1, max_length=64, description="Sticker set title (used on create)")
+    emoji: str = Field(default="😀", min_length=1, max_length=32, description="Emoji for added sticker (default: 😀)")
+    wait_timeout_sec: int = Field(
+        default=60,
+        ge=1,
+        le=300,
+        description="How long to wait for generation readiness before returning pending",
+    )
+
+    @field_validator("file_id")
+    @classmethod
+    def validate_wavespeed_file_id(cls, v: str) -> str:
+        file_id = v.strip()
+        if not file_id.startswith("ws_"):
+            raise ValueError("file_id must start with 'ws_'")
+        return file_id
+
+    @field_validator("name", "title", "emoji")
+    @classmethod
+    def validate_non_empty_text(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("Field cannot be empty")
+        return value
+
+
 class SnapstixGenerateRequest(BaseModel):
     """Request model for generating a sticker using Snapstix/RunPod."""
     

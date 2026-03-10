@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
 from app.handlers.sticker_handler import StickerHandler
-from app.models.requests import WaveSpeedGenerateRequest
+from app.models.requests import WaveSpeedGenerateRequest, WaveSpeedSaveToSetRequest
 
 
 @pytest.fixture
@@ -208,3 +208,43 @@ async def test_materialize_remove_background_failure(handler):
     with pytest.raises(HTTPException) as exc:
         await handler._materialize_wavespeed_job("ws_124")
     assert exc.value.status_code == 424
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_save_wavespeed_sticker_to_set_success(handler):
+    handler._await_wavespeed_sticker_ready = AsyncMock(return_value=(b"webp-bytes", "image/webp"))
+    handler.cache_manager.telegram_service = Mock()
+    handler.cache_manager.telegram_service.save_sticker_to_set = AsyncMock(
+        return_value={"action": "added", "name": "my_set_by_bot"}
+    )
+
+    request = WaveSpeedSaveToSetRequest(
+        file_id="ws_123",
+        user_id=12345,
+        name="my_set_by_bot",
+        title="My Set",
+        emoji="😀",
+    )
+    response = await handler.save_wavespeed_sticker_to_set(request)
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 200
+    handler.cache_manager.telegram_service.save_sticker_to_set.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_save_wavespeed_sticker_to_set_unsupported_format(handler):
+    handler._await_wavespeed_sticker_ready = AsyncMock(return_value=(b"png-bytes", "image/png"))
+
+    request = WaveSpeedSaveToSetRequest(
+        file_id="ws_123",
+        user_id=12345,
+        name="my_set_by_bot",
+        title="My Set",
+        emoji="😀",
+    )
+    with pytest.raises(HTTPException) as exc:
+        await handler.save_wavespeed_sticker_to_set(request)
+    assert exc.value.status_code == 422

@@ -3,6 +3,7 @@ import asyncio
 import logging
 import time
 import random
+import json
 from typing import Optional, Tuple, Dict, Any
 from app.config import settings
 from app.services.telegram_queue import TelegramRequestQueue
@@ -27,6 +28,7 @@ class TelegramServiceEnhanced:
     
     def __init__(self):
         self.bot_token = settings.telegram_bot_token
+        self.bot_username = (settings.telegram_bot_username or "").strip().lstrip("@")
         self.api_base_url = settings.telegram_api_base_url
         self.download_base_url = settings.telegram_download_base_url
         self._session: Optional[aiohttp.ClientSession] = None
@@ -556,6 +558,147 @@ class TelegramServiceEnhanced:
             return await self._retry_with_backoff(self._get_sticker_set_internal, name)
         
         return await self.request_queue.execute(_get_with_retry, name)
+
+    @staticmethod
+    def _is_stickerset_not_found_error(description: str) -> bool:
+        text = (description or "").lower()
+        return "stickerset_invalid" in text or "sticker set name is invalid" in text
+
+    async def save_sticker_to_set(
+        self,
+        *,
+        user_id: int,
+        name: str,
+        title: str,
+        emoji: str,
+        sticker_bytes: bytes,
+    ) -> Dict[str, Any]:
+        """
+        Add a static WEBP sticker to an existing set, or create a new set if missing.
+        """
+        normalized_name = self._normalize_sticker_set_name(name)
+        set_exists = False
+        try:
+            existing_set = await self.get_sticker_set(normalized_name)
+            set_exists = bool(existing_set)
+        except TelegramAPIError as te:
+            if te.status == 400 and self._is_stickerset_not_found_error(te.description):
+                set_exists = False
+            else:
+                raise
+
+        if set_exists:
+            await self._add_sticker_to_set(
+                user_id=user_id,
+                name=normalized_name,
+                emoji=emoji,
+                sticker_bytes=sticker_bytes,
+            )
+            return {"action": "added", "name": normalized_name}
+
+        await self._create_sticker_set(
+            user_id=user_id,
+            name=normalized_name,
+            title=title,
+            emoji=emoji,
+            sticker_bytes=sticker_bytes,
+        )
+        return {"action": "created", "name": normalized_name}
+
+    def _normalize_sticker_set_name(self, name: str) -> str:
+        """Ensure set name ends with _by_<bot_username> when bot username is configured."""
+        normalized = (name or "").strip()
+        if not normalized:
+            raise ValueError("Sticker set name cannot be empty")
+
+        if not self.bot_username:
+            return normalized
+
+        bot_suffix = f"_by_{self.bot_username.lower()}"
+        if normalized.lower().endswith(bot_suffix):
+            return normalized
+
+        max_len = 64
+        max_prefix_len = max_len - len(bot_suffix)
+        if max_prefix_len <= 0:
+            raise ValueError("Bot username is too long for Telegram sticker set name suffix")
+        base = normalized[:max_prefix_len].rstrip("_")
+        if not base:
+            raise ValueError("Sticker set name is too short after normalization")
+        return f"{base}{bot_suffix}"
+
+    async def _create_sticker_set(
+        self,
+        *,
+        user_id: int,
+        name: str,
+        title: str,
+        emoji: str,
+        sticker_bytes: bytes,
+    ) -> None:
+        url = f"{self.api_base_url}/bot{self.bot_token}/createNewStickerSet"
+        input_sticker = {
+            "sticker": "attach://sticker_file",
+            "format": "static",
+            "emoji_list": [emoji],
+        }
+        form = aiohttp.FormData()
+        form.add_field("user_id", str(user_id))
+        form.add_field("name", name)
+        form.add_field("title", title)
+        form.add_field("sticker_type", "regular")
+        form.add_field("stickers", json.dumps([input_sticker]))
+        form.add_field("sticker_file", sticker_bytes, filename="sticker.webp", content_type="image/webp")
+
+        start_time = time.time()
+        session = await self._get_session()
+        async with session.post(url, data=form) as response:
+            elapsed_ms = int((time.time() - start_time) * 1000)
+            data = await response.json(content_type=None)
+
+            if response.status == 200 and data.get("ok"):
+                self._record_success(elapsed_ms)
+                return
+
+            self._record_error(f"API_ERROR_{response.status}", elapsed_ms)
+            error_code = int(data.get("error_code", response.status) or response.status)
+            description = data.get("description", "Failed to create sticker set")
+            raise TelegramAPIError(error_code, description)
+
+    async def _add_sticker_to_set(
+        self,
+        *,
+        user_id: int,
+        name: str,
+        emoji: str,
+        sticker_bytes: bytes,
+    ) -> None:
+        url = f"{self.api_base_url}/bot{self.bot_token}/addStickerToSet"
+        input_sticker = {
+            "sticker": "attach://sticker_file",
+            "format": "static",
+            "emoji_list": [emoji],
+        }
+        form = aiohttp.FormData()
+        form.add_field("user_id", str(user_id))
+        form.add_field("name", name)
+        form.add_field("sticker", json.dumps(input_sticker))
+        form.add_field("sticker_file", sticker_bytes, filename="sticker.webp", content_type="image/webp")
+
+        start_time = time.time()
+        session = await self._get_session()
+        async with session.post(url, data=form) as response:
+            elapsed_ms = int((time.time() - start_time) * 1000)
+            data = await response.json(content_type=None)
+
+            if response.status == 200 and data.get("ok"):
+                self._record_success(elapsed_ms)
+                return
+
+            self._record_error(f"API_ERROR_{response.status}", elapsed_ms)
+            error_code = int(data.get("error_code", response.status) or response.status)
+            description = data.get("description", "Failed to add sticker to set")
+            raise TelegramAPIError(error_code, description)
     
     async def _get_sticker_set_internal(self, name: str) -> Optional[dict]:
         """Internal method to get sticker set from Telegram Bot API."""
