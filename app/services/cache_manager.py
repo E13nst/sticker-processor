@@ -111,6 +111,74 @@ class CacheManager:
             )
         
         return result
+
+    async def get_sticker_from_cache_only(self, file_id: str) -> Optional[Tuple[bytes, str, bool]]:
+        """
+        Get sticker only from Redis/Disk cache without Telegram fallback.
+
+        Returns:
+            Tuple of (content, mime_type, was_converted) or None
+        """
+        request_start = time.time()
+
+        result = await self._check_redis(file_id, request_start)
+        if result:
+            return result
+
+        result = await self._check_disk(file_id, request_start)
+        if result:
+            return result
+
+        return None
+
+    async def store_generated_sticker(
+        self,
+        file_id: str,
+        content: bytes,
+        output_format: str = "webp",
+        mime_type: str = "image/webp",
+    ) -> bool:
+        """
+        Store generated sticker content into disk and Redis caches.
+        """
+        stored_any = False
+
+        if settings.disk_cache_enabled:
+            try:
+                await self.disk_cache_service.store_file(
+                    file_id=file_id,
+                    content=content,
+                    file_format=output_format,
+                    original_size=len(content),
+                    converted=False,
+                )
+                stored_any = True
+            except Exception as e:
+                logger.error(f"Error storing generated sticker on disk ({file_id}): {e}")
+
+        if self.redis_service.redis and self.cache_strategy.should_cache_in_redis(
+            output_format,
+            len(content),
+            False,
+        ):
+            try:
+                cache_entry = StickerCache(
+                    file_id=file_id,
+                    file_data=content,
+                    mime_type=mime_type,
+                    file_name=f"{file_id}.{output_format}",
+                    file_size=len(content),
+                    original_format=output_format,
+                    output_format=output_format,
+                    last_updated=datetime.now(),
+                    is_converted=False,
+                )
+                await self.redis_service.set_sticker(cache_entry)
+                stored_any = True
+            except Exception as e:
+                logger.error(f"Error storing generated sticker in Redis ({file_id}): {e}")
+
+        return stored_any
     
     async def get_sticker_set(self, name: str) -> Optional[Dict[str, Any]]:
         """

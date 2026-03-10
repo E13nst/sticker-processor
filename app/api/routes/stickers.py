@@ -4,7 +4,13 @@ from fastapi.responses import StreamingResponse
 
 from app.services.cache_manager import CacheManager
 from app.handlers.sticker_handler import StickerHandler
-from app.models.requests import CombineStickersRequest, CombineStickerSetRequest, GenerateStickerRequest, SnapstixGenerateRequest
+from app.models.requests import (
+    CombineStickersRequest,
+    CombineStickerSetRequest,
+    GenerateStickerRequest,
+    SnapstixGenerateRequest,
+    WaveSpeedGenerateRequest,
+)
 
 
 def create_sticker_router(cache_manager: CacheManager) -> APIRouter:
@@ -201,6 +207,83 @@ def create_sticker_router(cache_manager: CacheManager) -> APIRouter:
     async def generate_sticker(request: GenerateStickerRequest):
         """Generate a sticker image using OpenAI API."""
         return await handler.generate_sticker(request)
+
+    @router.post(
+        "/stickers/wavespeed/generate",
+        summary="Generate Sticker via WaveSpeed",
+        description="""
+        Submit an async sticker generation request to WaveSpeed.
+
+        **Features:**
+        - Supports model selection (`flux-schnell`, `nanabanana`)
+        - Supports optional background removal for all models via `remove_background`
+        - Returns synthetic `ws_` file_id for further download
+
+        **Response:**
+        - Returns `202 Accepted` with `file_id`, `status=pending`, and `provider_request_id`
+        - Generated content should be downloaded via `GET /stickers/wavespeed/{file_id}`
+
+        **Examples:**
+        - `flux-schnell` (text-to-image):
+        ```json
+        {
+          "prompt": "gold dragonfly sticker, transparent background",
+          "model": "flux-schnell",
+          "size": "512*512",
+          "seed": -1,
+          "num_images": 1,
+          "strength": 0.8,
+          "remove_background": true
+        }
+        ```
+        - `nanabanana` (image edit):
+        ```json
+        {
+          "prompt": "Turn this into a clean telegram sticker style",
+          "model": "nanabanana",
+          "source_image_url": "https://example.com/input.png",
+          "remove_background": true
+        }
+        ```
+        - `nanabanana` (text-to-image):
+        ```json
+        {
+          "prompt": "fat gold cat with rick and morty style",
+          "model": "nanabanana",
+          "remove_background": true
+        }
+        ```
+        """,
+        tags=["Stickers"],
+        responses={
+            202: {"description": "WaveSpeed generation accepted"},
+            400: {"description": "Bad request (invalid model or parameters)"},
+            500: {"description": "Internal server error"},
+        },
+    )
+    async def generate_wavespeed_sticker(request: WaveSpeedGenerateRequest):
+        """Generate sticker via WaveSpeed."""
+        return await handler.generate_wavespeed_sticker(request)
+
+    @router.get(
+        "/stickers/wavespeed/{file_id}",
+        response_class=StreamingResponse,
+        summary="Get Generated WaveSpeed Sticker",
+        description="""
+        Download a generated sticker using synthetic `ws_` file_id.
+
+        **Statuses:**
+        - 200: ready and returned as Telegram-compatible image/webp
+        - 202: generation/post-processing still in progress
+        - 424/422: generation/background-removal/downloading failed
+        - 404: unknown job id
+        - 410: expired job
+        """,
+        tags=["Stickers"],
+    )
+    async def get_wavespeed_sticker(file_id: str):
+        """Download generated WaveSpeed sticker."""
+        return await handler.get_wavespeed_sticker(file_id)
     
     @router.post(
         "/stickers/snapstix/generate",

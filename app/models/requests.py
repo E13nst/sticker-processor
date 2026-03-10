@@ -149,34 +149,105 @@ class GenerateStickerRequest(BaseModel):
         if v not in ["high", "standard"]:
             raise ValueError("quality must be one of: 'high', 'standard'")
         return v
-    
+
+
+class WaveSpeedGenerateRequest(BaseModel):
+    """Request model for generating sticker image via WaveSpeed."""
+
+    prompt: str = Field(..., min_length=1, max_length=1000, description="Text prompt for sticker generation")
+    model: str = Field(default="flux-schnell", description="WaveSpeed model: 'flux-schnell' or 'nanabanana'")
+    size: str = Field(default="512*512", description="Image size in format 'WIDTH*HEIGHT' (default: '512*512')")
+    seed: int = Field(default=-1, description="Generation seed (-1 for random)")
+    num_images: int = Field(default=1, ge=1, le=1, description="Number of images to generate (currently only 1 is supported)")
+    strength: float = Field(default=0.8, ge=0.0, le=1.0, description="Generation strength")
+    image: str = Field(default="", description="Deprecated: optional base64 input image for img2img (backward compatibility)")
+    source_image_base64: Optional[str] = Field(default=None, description="Optional base64 source image for img2img")
+    source_image_url: Optional[str] = Field(default=None, description="Optional source image URL for img2img")
+    remove_background: bool = Field(default=False, description="Remove background from generated image")
+
+    @field_validator('prompt')
+    @classmethod
+    def validate_wavespeed_prompt(cls, v):
+        """Validate prompt format."""
+        if not v or not v.strip():
+            raise ValueError("Prompt cannot be empty")
+        return v.strip()
+
+    @field_validator('model')
+    @classmethod
+    def validate_wavespeed_model(cls, v):
+        """Validate WaveSpeed model name."""
+        allowed_models = {"flux-schnell", "nanabanana"}
+        if not v or not v.strip():
+            raise ValueError("Model cannot be empty")
+
+        model = v.strip()
+        if model not in allowed_models:
+            raise ValueError("model must be one of: 'flux-schnell', 'nanabanana'")
+        return model
+
     @field_validator('size')
     @classmethod
-    def validate_size(cls, v):
-        """Validate size format."""
+    def validate_wavespeed_size(cls, v):
+        """Validate WaveSpeed size format WIDTH*HEIGHT."""
         if not v:
             raise ValueError("Size cannot be empty")
-        
-        # DALL-E 3 supported sizes: 1024x1024, 1792x1024, 1024x1792
-        # For 512x512, we'll generate at 1024x1024 and scale down
-        if v == '512x512':
-            return v
-        
-        # Validate format: WIDTHxHEIGHT
-        pattern = r'^\d+x\d+$'
+
+        pattern = r'^\d+\*\d+$'
         if not re.match(pattern, v):
-            raise ValueError("Size must be in format 'WIDTHxHEIGHT' (e.g., '1024x1024')")
-        
-        # Extract dimensions
-        parts = v.split('x')
-        width = int(parts[0])
-        height = int(parts[1])
-        
-        # Validate dimensions are reasonable
+            raise ValueError("Size must be in format 'WIDTH*HEIGHT' (e.g., '512*512')")
+
+        width_str, height_str = v.split('*')
+        width = int(width_str)
+        height = int(height_str)
+
         if width < 256 or width > 2048 or height < 256 or height > 2048:
             raise ValueError("Size dimensions must be between 256 and 2048 pixels")
-        
+
         return v
+
+    @field_validator('source_image_url')
+    @classmethod
+    def validate_source_image_url(cls, v):
+        """Validate source image URL format."""
+        if v is None:
+            return v
+        url = v.strip()
+        if not url or url.lower() == "string":
+            return None
+        if not url.startswith(("http://", "https://")):
+            raise ValueError("source_image_url must start with http:// or https://")
+        return url
+
+    @field_validator('source_image_base64')
+    @classmethod
+    def validate_source_image_base64(cls, v):
+        """Validate source image base64 field."""
+        if v is None:
+            return v
+        value = v.strip()
+        if not value or value.lower() == "string":
+            return None
+        return value
+
+    @model_validator(mode='after')
+    def validate_source_image_fields(self):
+        """Normalize source image fields and prevent conflicting inputs."""
+        image_value = (self.image or "").strip()
+        has_legacy_image = bool(image_value and image_value.lower() != "string")
+        has_base64 = bool(self.source_image_base64)
+        has_url = bool(self.source_image_url)
+
+        if has_base64 and has_url:
+            raise ValueError("Use only one source image field: source_image_base64 or source_image_url")
+
+        # Backward compatibility: if old `image` provided, map it to source_image_base64.
+        if has_legacy_image and not has_base64 and not has_url:
+            self.source_image_base64 = image_value
+        elif has_legacy_image and (has_base64 or has_url):
+            raise ValueError("Field 'image' cannot be combined with source_image_base64/source_image_url")
+
+        return self
 
 
 class SnapstixGenerateRequest(BaseModel):

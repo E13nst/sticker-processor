@@ -19,6 +19,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_for_json(value):
+    """Recursively convert non-serializable objects to JSON-safe values."""
+    if isinstance(value, dict):
+        return {str(k): _sanitize_for_json(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_for_json(v) for v in value]
+    if isinstance(value, tuple):
+        return [_sanitize_for_json(v) for v in value]
+    if isinstance(value, BaseException):
+        return str(value)
+    try:
+        json.dumps(value)
+        return value
+    except Exception:
+        return str(value)
+
 # Check OpenAI API key configuration
 if not settings.openai_api_key:
     logger.warning(
@@ -127,16 +144,18 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         except json.JSONDecodeError:
             logger.error(f"Validation error on {request.url.path}: {exc.errors()}")
             logger.error(f"Request body (raw, first 500 chars): {body_str[:500]}")
-        
+        safe_detail = _sanitize_for_json(exc.errors())
+        safe_body = _sanitize_for_json(json.loads(body_str) if body_str else None)
         return JSONResponse(
             status_code=400,
-            content={"detail": exc.errors(), "body": json.loads(body_str) if body_str else None}
+            content={"detail": safe_detail, "body": safe_body}
         )
     except Exception as e:
         logger.error(f"Error in validation exception handler: {e}")
+        safe_detail = _sanitize_for_json(exc.errors())
         return JSONResponse(
             status_code=400,
-            content={"detail": exc.errors()}
+            content={"detail": safe_detail}
         )
 
 

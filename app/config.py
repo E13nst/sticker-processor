@@ -11,6 +11,12 @@ class Settings(BaseSettings):
     
     # OpenAI Configuration
     openai_api_key: Optional[str] = None
+
+    # WaveSpeed Configuration
+    wavespeed_api_key: Optional[str] = None
+    wavespeed_poll_timeout_sec: int = 20
+    wavespeed_registry_ttl_hours: int = 24
+    wavespeed_max_materialize_concurrency: int = 4
     
     # RunPod API Configuration
     runpod_api_url: str = "https://api.runpod.ai/v2/5ecx4u5xss6vi6/run"

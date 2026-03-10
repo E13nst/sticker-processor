@@ -4,6 +4,9 @@ import logging
 import asyncio
 import io
 import aiohttp
+import hashlib
+import base64
+from datetime import datetime
 from typing import Optional, Tuple, List
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -13,12 +16,15 @@ from app.services.cache_manager import CacheManager
 from app.services.telegram_enhanced import TelegramAPIError
 from app.services.openai_service import OpenAIService
 from app.services.runpod_service import RunPodService
+from app.services.sticker_normalizer import StickerNormalizer
+from app.services.wavespeed_generation_service import WaveSpeedGenerationService
+from app.services.wavespeed_registry import WaveSpeedRegistryService
 from app.services.image_combiner import (
     image_from_bytes,
     combine_images,
     image_to_webp
 )
-from app.models.requests import GenerateStickerRequest, SnapstixGenerateRequest
+from app.models.requests import GenerateStickerRequest, SnapstixGenerateRequest, WaveSpeedGenerateRequest
 from app.utils.error_handler import handle_telegram_api_error, handle_timeout_error, handle_generic_error
 from app.utils.logging_helpers import log_performance
 from app.utils.response_builder import build_sticker_response_headers
@@ -34,6 +40,11 @@ class StickerHandler:
         self.cache_manager = cache_manager
         self._openai_service = None
         self._runpod_service = None
+        self._wavespeed_service = None
+        self._wavespeed_registry = None
+        self._sticker_normalizer = StickerNormalizer()
+        self._ws_materialize_semaphore = asyncio.Semaphore(settings.wavespeed_max_materialize_concurrency)
+        self._ws_locks = {}
     
     @property
     def openai_service(self) -> OpenAIService:
@@ -48,6 +59,20 @@ class StickerHandler:
         if self._runpod_service is None:
             self._runpod_service = RunPodService()
         return self._runpod_service
+
+    @property
+    def wavespeed_service(self) -> WaveSpeedGenerationService:
+        """Lazy initialization of WaveSpeed service."""
+        if self._wavespeed_service is None:
+            self._wavespeed_service = WaveSpeedGenerationService()
+        return self._wavespeed_service
+
+    @property
+    def wavespeed_registry(self) -> WaveSpeedRegistryService:
+        """Lazy initialization of WaveSpeed metadata registry."""
+        if self._wavespeed_registry is None:
+            self._wavespeed_registry = WaveSpeedRegistryService()
+        return self._wavespeed_registry
     
     async def get_sticker(
         self, 
@@ -580,6 +605,231 @@ class StickerHandler:
                 status_code=500,
                 detail=f"Internal server error while generating sticker: {str(e)}"
             )
+
+    async def generate_wavespeed_sticker(
+        self,
+        request: WaveSpeedGenerateRequest
+    ) -> JSONResponse:
+        """Submit WaveSpeed generation job and return synthetic file_id."""
+        start_time = time.time()
+
+        try:
+            wavespeed_service = self.wavespeed_service
+            registry = self.wavespeed_registry
+            source_image_input = await self._resolve_source_image_input(request)
+
+            provider_request_id = await wavespeed_service.submit(
+                model=request.model,
+                prompt=request.prompt,
+                size=request.size,
+                seed=request.seed,
+                num_images=request.num_images,
+                strength=request.strength,
+                image=source_image_input,
+            )
+
+            file_id = self._build_wavespeed_file_id(provider_request_id, request)
+            await registry.create_job(
+                file_id=file_id,
+                provider_request_id=provider_request_id,
+                model=request.model,
+                prompt=request.prompt,
+                remove_background=request.remove_background,
+            )
+
+            processing_time = int((time.time() - start_time) * 1000)
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "file_id": file_id,
+                    "status": "pending",
+                    "provider_request_id": provider_request_id,
+                },
+                headers={
+                    "X-Processing-Time-Ms": str(processing_time),
+                    "Content-Type": "application/json",
+                },
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"Error submitting WaveSpeed generation: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to submit WaveSpeed generation: {str(e)}")
+
+    async def _resolve_source_image_input(self, request: WaveSpeedGenerateRequest) -> str:
+        """Resolve source image into URL/base64 payload for WaveSpeed."""
+        if request.source_image_base64:
+            return request.source_image_base64
+
+        if request.source_image_url:
+            # Nano Banana edit model accepts source image URL directly.
+            if request.model == "nanabanana":
+                return request.source_image_url
+
+            image_bytes = await self.wavespeed_service.client.download_image(request.source_image_url)
+            if not image_bytes:
+                raise HTTPException(status_code=400, detail="Failed to download source_image_url")
+            return base64.b64encode(image_bytes).decode("utf-8")
+
+        return ""
+
+    async def get_wavespeed_sticker(self, file_id: str):
+        """Download generated sticker by ws_ file_id."""
+        start_time = time.time()
+
+        if not file_id.startswith("ws_"):
+            raise HTTPException(status_code=400, detail="WaveSpeed file_id must start with 'ws_'")
+
+        cached = await self.cache_manager.get_sticker_from_cache_only(file_id)
+        if cached:
+            content, mime_type, was_converted = cached
+            processing_time = int((time.time() - start_time) * 1000)
+            headers = build_sticker_response_headers(file_id, was_converted, len(content), processing_time)
+            return StreamingResponse(io.BytesIO(content), media_type=mime_type, headers=headers)
+
+        registry = self.wavespeed_registry
+        job = await registry.get_job(file_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="WaveSpeed job not found")
+
+        if self._is_job_expired(job):
+            raise HTTPException(status_code=410, detail="WaveSpeed job has expired")
+
+        terminal_status = await self._refresh_wavespeed_job_status(file_id, job)
+        if terminal_status == "pending":
+            return JSONResponse(status_code=202, content={"file_id": file_id, "status": "pending"})
+        if terminal_status == "failed":
+            updated_job = await registry.get_job(file_id)
+            raise self._map_wavespeed_error_to_http(updated_job)
+
+        content, mime_type = await self._materialize_wavespeed_job(file_id)
+
+        processing_time = int((time.time() - start_time) * 1000)
+        headers = build_sticker_response_headers(file_id, False, len(content), processing_time)
+        return StreamingResponse(io.BytesIO(content), media_type=mime_type, headers=headers)
+
+    async def _refresh_wavespeed_job_status(self, file_id: str, job: dict) -> str:
+        """Poll WaveSpeed once and synchronize local registry state."""
+        if job["status"] in {"failed", "ready"}:
+            return "failed" if job["status"] == "failed" else "ready"
+
+        service = self.wavespeed_service
+        registry = self.wavespeed_registry
+        result = await service.poll_once(job["provider_request_id"])
+        if not result:
+            return "pending"
+
+        status = service.extract_status(result)
+        if status == "completed":
+            source_url = service.extract_output_url(result)
+            if not source_url:
+                await registry.set_failed(file_id, {"code": "missing_output_url", "message": "WaveSpeed returned no output URL"})
+                return "failed"
+            await registry.set_completed(file_id, source_url)
+            return "ready"
+
+        if status == "failed":
+            await registry.set_failed(file_id, {"code": "generation_failed", "message": service.extract_error(result)})
+            return "failed"
+
+        await registry.set_pending(file_id)
+        return "pending"
+
+    async def _materialize_wavespeed_job(self, file_id: str) -> Tuple[bytes, str]:
+        """Download, post-process, normalize and cache generated image."""
+        async with self._ws_materialize_semaphore:
+            lock = self._ws_locks.setdefault(file_id, asyncio.Lock())
+            async with lock:
+                # Double-check cache after waiting for lock.
+                cached = await self.cache_manager.get_sticker_from_cache_only(file_id)
+                if cached:
+                    return cached[0], cached[1]
+
+                registry = self.wavespeed_registry
+                job = await registry.get_job(file_id)
+                if not job or not job.get("source_url"):
+                    raise HTTPException(status_code=202, detail="WaveSpeed job is not ready yet")
+
+                service = self.wavespeed_service
+                image_bytes = await service.client.download_image(job["source_url"])
+                if not image_bytes:
+                    await registry.set_failed(file_id, {"code": "download_failed", "message": "Failed to download generated image"})
+                    raise HTTPException(status_code=424, detail="Failed to download generated image")
+
+                if job.get("remove_background"):
+                    image_bytes = await self._apply_background_removal(file_id, job)
+
+                normalized_bytes, mime_type = self._sticker_normalizer.normalize_to_webp(image_bytes)
+                await self.cache_manager.store_generated_sticker(
+                    file_id=file_id,
+                    content=normalized_bytes,
+                    output_format="webp",
+                    mime_type=mime_type,
+                )
+                await registry.set_ready(file_id)
+                return normalized_bytes, mime_type
+
+    async def _apply_background_removal(self, file_id: str, job: dict) -> bytes:
+        """Apply WaveSpeed background remover for generated image."""
+        service = self.wavespeed_service
+        registry = self.wavespeed_registry
+
+        # Background remover expects URL, so we use source_url result from generation.
+        bg_request_id = await service.client.submit_background_remover(job["source_url"])
+        bg_result = await service.poll_until_terminal(
+            bg_request_id,
+            timeout_sec=settings.wavespeed_poll_timeout_sec,
+            interval_sec=1.0,
+        )
+        if not bg_result:
+            await registry.set_failed(file_id, {"code": "background_removal_timeout", "message": "Background remover timeout"})
+            raise HTTPException(status_code=424, detail="Background remover timeout")
+
+        bg_status = service.extract_status(bg_result)
+        if bg_status != "completed":
+            await registry.set_failed(file_id, {"code": "background_removal_failed", "message": service.extract_error(bg_result)})
+            raise HTTPException(status_code=424, detail="Background remover failed")
+
+        bg_url = service.extract_output_url(bg_result)
+        if not bg_url:
+            await registry.set_failed(file_id, {"code": "background_removal_missing_output", "message": "Background remover returned no output URL"})
+            raise HTTPException(status_code=424, detail="Background remover returned no output URL")
+
+        bg_bytes = await service.client.download_image(bg_url)
+        if not bg_bytes:
+            await registry.set_failed(file_id, {"code": "background_removal_download_failed", "message": "Failed to download background-removed image"})
+            raise HTTPException(status_code=424, detail="Failed to download background-removed image")
+        return bg_bytes
+
+    def _build_wavespeed_file_id(self, provider_request_id: str, request: WaveSpeedGenerateRequest) -> str:
+        """Build namespaced synthetic file_id for WaveSpeed generated assets."""
+        fingerprint = "|".join(
+            [
+                provider_request_id,
+                request.model,
+                request.size,
+                str(request.remove_background),
+                str(int(datetime.utcnow().timestamp())),
+            ]
+        )
+        return f"ws_{hashlib.sha256(fingerprint.encode('utf-8')).hexdigest()[:24]}"
+
+    def _is_job_expired(self, job: dict) -> bool:
+        expires_at = job.get("expires_at")
+        if not expires_at:
+            return False
+        try:
+            return datetime.utcnow() > datetime.fromisoformat(expires_at)
+        except ValueError:
+            return False
+
+    def _map_wavespeed_error_to_http(self, job: Optional[dict]) -> HTTPException:
+        payload = (job or {}).get("error_payload") or {}
+        code = payload.get("code", "wavespeed_failed")
+        message = payload.get("message", "WaveSpeed processing failed")
+        # 424 for upstream processing errors, 422 for semantic failures.
+        status_code = 424 if "download" in code or "background" in code or "generation" in code else 422
+        return HTTPException(status_code=status_code, detail={"code": code, "message": message})
     
     async def generate_snapstix_sticker(
         self,
