@@ -578,6 +578,7 @@ class TelegramServiceEnhanced:
         """
         normalized_name = self._normalize_sticker_set_name(name)
         set_exists = False
+        existing_set = None
         try:
             existing_set = await self.get_sticker_set(normalized_name)
             set_exists = bool(existing_set)
@@ -588,13 +589,21 @@ class TelegramServiceEnhanced:
                 raise
 
         if set_exists:
+            before_unique_ids = self._extract_sticker_unique_ids(existing_set)
             await self._add_sticker_to_set(
                 user_id=user_id,
                 name=normalized_name,
                 emoji=emoji,
                 sticker_bytes=sticker_bytes,
             )
-            return {"action": "added", "name": normalized_name}
+            updated_set = await self.get_sticker_set(normalized_name)
+            saved_sticker = self._resolve_saved_sticker(updated_set, before_unique_ids=before_unique_ids)
+            return {
+                "action": "added",
+                "name": normalized_name,
+                "telegram_file_id": saved_sticker.get("file_id"),
+                "telegram_file_unique_id": saved_sticker.get("file_unique_id"),
+            }
 
         await self._create_sticker_set(
             user_id=user_id,
@@ -603,7 +612,41 @@ class TelegramServiceEnhanced:
             emoji=emoji,
             sticker_bytes=sticker_bytes,
         )
-        return {"action": "created", "name": normalized_name}
+        created_set = await self.get_sticker_set(normalized_name)
+        saved_sticker = self._resolve_saved_sticker(created_set, before_unique_ids=set())
+        return {
+            "action": "created",
+            "name": normalized_name,
+            "telegram_file_id": saved_sticker.get("file_id"),
+            "telegram_file_unique_id": saved_sticker.get("file_unique_id"),
+        }
+
+    @staticmethod
+    def _extract_sticker_unique_ids(sticker_set: Optional[dict]) -> set:
+        stickers = (sticker_set or {}).get("stickers", [])
+        return {s.get("file_unique_id") for s in stickers if s.get("file_unique_id")}
+
+    @staticmethod
+    def _resolve_saved_sticker(sticker_set: Optional[dict], before_unique_ids: set) -> Dict[str, str]:
+        stickers = (sticker_set or {}).get("stickers", [])
+        if not stickers:
+            raise TelegramAPIError(502, "Sticker was saved, but Telegram returned an empty sticker set")
+
+        if before_unique_ids:
+            for sticker in stickers:
+                unique_id = sticker.get("file_unique_id")
+                if unique_id and unique_id not in before_unique_ids:
+                    return {
+                        "file_id": sticker.get("file_id"),
+                        "file_unique_id": unique_id,
+                    }
+
+        # Fallback: Telegram appends new stickers to the end of the set.
+        fallback = stickers[-1]
+        return {
+            "file_id": fallback.get("file_id"),
+            "file_unique_id": fallback.get("file_unique_id"),
+        }
 
     def _normalize_sticker_set_name(self, name: str) -> str:
         """Ensure set name ends with _by_<bot_username> when bot username is configured."""

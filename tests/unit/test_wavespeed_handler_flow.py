@@ -216,7 +216,11 @@ async def test_save_wavespeed_sticker_to_set_success(handler):
     handler._await_wavespeed_sticker_ready = AsyncMock(return_value=(b"webp-bytes", "image/webp"))
     handler.cache_manager.telegram_service = Mock()
     handler.cache_manager.telegram_service.save_sticker_to_set = AsyncMock(
-        return_value={"action": "added", "name": "my_set_by_bot"}
+        return_value={
+            "action": "added",
+            "name": "my_set_by_bot",
+            "telegram_file_id": "sticker-file-id-1",
+        }
     )
 
     request = WaveSpeedSaveToSetRequest(
@@ -230,6 +234,41 @@ async def test_save_wavespeed_sticker_to_set_success(handler):
 
     assert isinstance(response, JSONResponse)
     assert response.status_code == 200
+    assert b'"telegram_file_id":"sticker-file-id-1"' in response.body
+    assert b'"deduplicated":false' in response.body
+    handler.cache_manager.telegram_service.save_sticker_to_set.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_save_wavespeed_sticker_to_set_retry_returns_cached_result(handler):
+    handler._await_wavespeed_sticker_ready = AsyncMock(return_value=(b"webp-bytes", "image/webp"))
+    handler.cache_manager.telegram_service = Mock()
+    handler.cache_manager.telegram_service.save_sticker_to_set = AsyncMock(
+        return_value={
+            "action": "added",
+            "name": "my_set_by_bot",
+            "telegram_file_id": "sticker-file-id-2",
+        }
+    )
+
+    request = WaveSpeedSaveToSetRequest(
+        file_id="ws_123",
+        user_id=12345,
+        name="my_set_by_bot",
+        title="My Set",
+        emoji="😀",
+    )
+
+    first_response = await handler.save_wavespeed_sticker_to_set(request)
+    second_response = await handler.save_wavespeed_sticker_to_set(request)
+
+    assert isinstance(first_response, JSONResponse)
+    assert first_response.status_code == 200
+    assert isinstance(second_response, JSONResponse)
+    assert second_response.status_code == 200
+    assert b'"telegram_file_id":"sticker-file-id-2"' in second_response.body
+    assert b'"deduplicated":true' in second_response.body
     handler.cache_manager.telegram_service.save_sticker_to_set.assert_awaited_once()
 
 

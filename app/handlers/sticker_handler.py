@@ -6,6 +6,7 @@ import io
 import aiohttp
 import hashlib
 import base64
+import json
 from datetime import datetime
 from typing import Optional, Tuple, List
 from fastapi import HTTPException
@@ -50,6 +51,7 @@ class StickerHandler:
         self._sticker_normalizer = StickerNormalizer()
         self._ws_materialize_semaphore = asyncio.Semaphore(settings.wavespeed_max_materialize_concurrency)
         self._ws_locks = {}
+        self._ws_save_to_set_idempotency_cache = {}
     
     @property
     def openai_service(self) -> OpenAIService:
@@ -722,6 +724,23 @@ class StickerHandler:
         if mime_type != "image/webp":
             raise HTTPException(status_code=422, detail="Only static WEBP stickers are supported for saving to set")
 
+        idempotency_key = self._build_ws_save_to_set_idempotency_key(request, content)
+        cached_result = await self._get_ws_save_to_set_idempotency_result(idempotency_key)
+        if cached_result:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "file_id": request.file_id,
+                    "telegram_file_id": cached_result.get("telegram_file_id"),
+                    "set_name": cached_result.get("name", request.name),
+                    "title": request.title,
+                    "emoji": request.emoji,
+                    "result": cached_result,
+                    "status": "saved",
+                    "deduplicated": True,
+                },
+            )
+
         try:
             result = await self.cache_manager.telegram_service.save_sticker_to_set(
                 user_id=request.user_id,
@@ -733,17 +752,63 @@ class StickerHandler:
         except TelegramAPIError as te:
             raise HTTPException(status_code=te.status, detail=te.description)
 
+        await self._set_ws_save_to_set_idempotency_result(idempotency_key, result)
+
         return JSONResponse(
             status_code=200,
             content={
                 "file_id": request.file_id,
-                "set_name": request.name,
+                "telegram_file_id": result.get("telegram_file_id"),
+                "set_name": result.get("name", request.name),
                 "title": request.title,
                 "emoji": request.emoji,
                 "result": result,
                 "status": "saved",
+                "deduplicated": False,
             },
         )
+
+    def _build_ws_save_to_set_idempotency_key(
+        self,
+        request: WaveSpeedSaveToSetRequest,
+        sticker_bytes: bytes,
+    ) -> str:
+        payload_fingerprint = "|".join(
+            [
+                str(request.user_id),
+                request.name.strip().lower(),
+                hashlib.sha256(sticker_bytes).hexdigest(),
+            ]
+        )
+        digest = hashlib.sha256(payload_fingerprint.encode("utf-8")).hexdigest()
+        return f"wavespeed:save_to_set:idempotency:{digest}"
+
+    async def _get_ws_save_to_set_idempotency_result(self, idempotency_key: str) -> Optional[dict]:
+        redis_client = getattr(getattr(self.cache_manager, "redis_service", None), "redis", None)
+        if redis_client:
+            try:
+                raw = await redis_client.get(idempotency_key)
+                if raw:
+                    if isinstance(raw, bytes):
+                        return json.loads(raw.decode("utf-8"))
+                    return json.loads(raw)
+            except Exception as e:
+                logger.warning(f"Failed to read idempotency cache from Redis: {e}")
+
+        return self._ws_save_to_set_idempotency_cache.get(idempotency_key)
+
+    async def _set_ws_save_to_set_idempotency_result(self, idempotency_key: str, result: dict) -> None:
+        redis_client = getattr(getattr(self.cache_manager, "redis_service", None), "redis", None)
+        payload = json.dumps(result)
+        if redis_client:
+            try:
+                ttl_seconds = 7 * 24 * 60 * 60
+                await redis_client.setex(idempotency_key, ttl_seconds, payload.encode("utf-8"))
+            except Exception as e:
+                logger.warning(f"Failed to store idempotency cache in Redis: {e}")
+
+        # In-memory fallback for deployments without Redis.
+        self._ws_save_to_set_idempotency_cache[idempotency_key] = result
 
     async def _await_wavespeed_sticker_ready(self, *, file_id: str, timeout_sec: int) -> Tuple[bytes, str]:
         """Wait for generated sticker to become ready in cache and return content."""
