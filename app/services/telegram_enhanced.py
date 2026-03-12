@@ -569,7 +569,7 @@ class TelegramServiceEnhanced:
         *,
         user_id: int,
         name: str,
-        title: str,
+        title: Optional[str],
         emoji: str,
         sticker_bytes: bytes,
     ) -> Dict[str, Any]:
@@ -675,10 +675,17 @@ class TelegramServiceEnhanced:
         *,
         user_id: int,
         name: str,
-        title: str,
+        title: Optional[str],
         emoji: str,
         sticker_bytes: bytes,
     ) -> None:
+        normalized_title = (title or "").strip()
+        if not normalized_title:
+            raise ValueError(
+                "Field 'title' is required when creating a new sticker set. "
+                "Provide title or use an existing set name."
+            )
+
         url = f"{self.api_base_url}/bot{self.bot_token}/createNewStickerSet"
         input_sticker = {
             "sticker": "attach://sticker_file",
@@ -688,7 +695,7 @@ class TelegramServiceEnhanced:
         form = aiohttp.FormData()
         form.add_field("user_id", str(user_id))
         form.add_field("name", name)
-        form.add_field("title", title)
+        form.add_field("title", normalized_title)
         form.add_field("sticker_type", "regular")
         form.add_field("stickers", json.dumps([input_sticker]))
         form.add_field("sticker_file", sticker_bytes, filename="sticker.webp", content_type="image/webp")

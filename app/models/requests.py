@@ -256,7 +256,12 @@ class WaveSpeedSaveToSetRequest(BaseModel):
     file_id: str = Field(..., min_length=4, description="Synthetic WaveSpeed file_id (must start with ws_)")
     user_id: int = Field(..., gt=0, description="Telegram user_id (owner of sticker set)")
     name: str = Field(..., min_length=1, max_length=64, description="Sticker set short name")
-    title: str = Field(..., min_length=1, max_length=64, description="Sticker set title (used on create)")
+    title: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        description="Sticker set title. Optional for existing set, required only when creating a new set",
+    )
     emoji: str = Field(default="😀", min_length=1, max_length=32, description="Emoji for added sticker (default: 😀)")
     wait_timeout_sec: int = Field(
         default=60,
@@ -273,12 +278,22 @@ class WaveSpeedSaveToSetRequest(BaseModel):
             raise ValueError("file_id must start with 'ws_'")
         return file_id
 
-    @field_validator("name", "title", "emoji")
+    @field_validator("name", "emoji")
     @classmethod
     def validate_non_empty_text(cls, v: str) -> str:
         value = v.strip()
         if not value:
             raise ValueError("Field cannot be empty")
+        return value
+
+    @field_validator("title")
+    @classmethod
+    def validate_optional_title(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        value = v.strip()
+        if not value:
+            return None
         return value
 
 

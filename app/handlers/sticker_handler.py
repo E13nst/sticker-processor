@@ -749,6 +749,8 @@ class StickerHandler:
                 emoji=request.emoji,
                 sticker_bytes=content,
             )
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
         except TelegramAPIError as te:
             raise HTTPException(status_code=te.status, detail=te.description)
 

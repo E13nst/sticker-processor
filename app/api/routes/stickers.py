@@ -300,13 +300,14 @@ def create_sticker_router(cache_manager: CacheManager) -> APIRouter:
         **Notes:**
         - Supports static WEBP stickers only
         - Requires Telegram `user_id` (sticker set owner)
+        - `title` is optional when adding to an existing set, but required for creating a new set
         - If generation is still in progress after timeout, returns `202`
         """,
         tags=["Stickers"],
         responses={
             200: {"description": "Sticker saved to set successfully"},
             202: {"description": "Generation still pending"},
-            400: {"description": "Bad request"},
+            400: {"description": "Bad request (validation error, including missing title for new set)"},
             404: {"description": "WaveSpeed job not found"},
             410: {"description": "WaveSpeed job expired"},
             422: {"description": "Unsupported sticker format"},

@@ -274,6 +274,54 @@ async def test_save_wavespeed_sticker_to_set_retry_returns_cached_result(handler
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_save_wavespeed_sticker_to_set_without_title_for_existing_set(handler):
+    handler._await_wavespeed_sticker_ready = AsyncMock(return_value=(b"webp-bytes", "image/webp"))
+    handler.cache_manager.telegram_service = Mock()
+    handler.cache_manager.telegram_service.save_sticker_to_set = AsyncMock(
+        return_value={
+            "action": "added",
+            "name": "my_set_by_bot",
+            "telegram_file_id": "sticker-file-id-3",
+        }
+    )
+
+    request = WaveSpeedSaveToSetRequest(
+        file_id="ws_123",
+        user_id=12345,
+        name="my_set_by_bot",
+        title=None,
+        emoji="😀",
+    )
+    response = await handler.save_wavespeed_sticker_to_set(request)
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 200
+    assert b'"telegram_file_id":"sticker-file-id-3"' in response.body
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_save_wavespeed_sticker_to_set_missing_title_for_new_set(handler):
+    handler._await_wavespeed_sticker_ready = AsyncMock(return_value=(b"webp-bytes", "image/webp"))
+    handler.cache_manager.telegram_service = Mock()
+    handler.cache_manager.telegram_service.save_sticker_to_set = AsyncMock(
+        side_effect=ValueError("Field 'title' is required when creating a new sticker set.")
+    )
+
+    request = WaveSpeedSaveToSetRequest(
+        file_id="ws_123",
+        user_id=12345,
+        name="new_set_by_bot",
+        title=None,
+        emoji="😀",
+    )
+    with pytest.raises(HTTPException) as exc:
+        await handler.save_wavespeed_sticker_to_set(request)
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_save_wavespeed_sticker_to_set_unsupported_format(handler):
     handler._await_wavespeed_sticker_ready = AsyncMock(return_value=(b"png-bytes", "image/png"))
 
