@@ -10,7 +10,7 @@ from app.services.telegram_enhanced import TelegramServiceEnhanced, TelegramAPIE
 from app.services.converter import ConverterService
 from app.services.cache_strategy import CacheStrategy
 from app.services.cache.cache_chain import CacheChain
-from app.models.responses import StickerCache
+from app.models.responses import StickerCache, ImageCache
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -179,6 +179,43 @@ class CacheManager:
                 logger.error(f"Error storing generated sticker in Redis ({file_id}): {e}")
 
         return stored_any
+
+    async def store_uploaded_image(
+        self,
+        image_id: str,
+        content: bytes,
+        output_format: str,
+        mime_type: str,
+    ) -> bool:
+        """
+        Store uploaded image in Redis with image-specific TTL.
+        Uploaded images are kept out of disk cache by default.
+        """
+        if not self.redis_service.redis:
+            return False
+
+        if settings.image_cache_disk_enabled:
+            logger.warning(
+                "image_cache_disk_enabled=true is configured, but disk persistence for uploaded images is not implemented"
+            )
+
+        cache_entry = ImageCache(
+            image_id=image_id,
+            file_data=content,
+            mime_type=mime_type,
+            file_name=f"{image_id}.{output_format}",
+            file_size=len(content),
+            output_format=output_format,
+            last_updated=datetime.now(),
+        )
+        return await self.redis_service.set_image(cache_entry, ttl_days=settings.image_cache_ttl_days)
+
+    async def get_uploaded_image(self, image_id: str) -> Optional[Tuple[bytes, str]]:
+        """Get uploaded image from Redis cache only."""
+        cached = await self.redis_service.get_image(image_id)
+        if not cached:
+            return None
+        return cached.file_data, cached.mime_type
     
     async def get_sticker_set(self, name: str) -> Optional[Dict[str, Any]]:
         """

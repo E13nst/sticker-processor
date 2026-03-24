@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 import redis.asyncio as redis
 from app.config import settings
-from app.models.responses import StickerCache, CacheStats
+from app.models.responses import StickerCache, ImageCache, CacheStats
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +87,10 @@ class RedisService:
     def _get_sticker_set_cache_key(self, name: str) -> str:
         """Generate cache key for sticker set."""
         return f"sticker_set:{name}"
+
+    def _get_image_cache_key(self, image_id: str) -> str:
+        """Generate cache key for uploaded image."""
+        return f"image:file:{image_id}"
     
     async def get_sticker(self, file_id: str) -> Optional[StickerCache]:
         """Get sticker from cache."""
@@ -137,6 +141,37 @@ class RedisService:
         except Exception as e:
             logger.error(f"Error getting sticker {file_id} from cache: {e}")
             return None
+
+    async def get_image(self, image_id: str) -> Optional[ImageCache]:
+        """Get uploaded image from cache."""
+        if not self.redis:
+            return None
+
+        try:
+            key = self._get_image_cache_key(image_id)
+            cached_data = await self.redis.get(key)
+            if not cached_data:
+                return None
+
+            if isinstance(cached_data, bytes):
+                data = json.loads(cached_data.decode("utf-8"))
+            else:
+                data = json.loads(cached_data)
+
+            import base64
+            file_data = base64.b64decode(data["file_data"])
+            return ImageCache(
+                image_id=data["image_id"],
+                file_data=file_data,
+                mime_type=data["mime_type"],
+                file_name=data["file_name"],
+                file_size=data["file_size"],
+                output_format=data["output_format"],
+                last_updated=datetime.fromisoformat(data["last_updated"]),
+            )
+        except Exception as e:
+            logger.error(f"Error getting image {image_id} from cache: {e}")
+            return None
     
     async def set_sticker(self, sticker_cache: StickerCache) -> bool:
         """Store sticker in cache."""
@@ -176,6 +211,34 @@ class RedisService:
         except Exception as e:
             logger.error(f"Error storing sticker {sticker_cache.file_id} in cache: {e}")
             return False
+
+    async def set_image(self, image_cache: ImageCache, ttl_days: Optional[int] = None) -> bool:
+        """Store uploaded image in cache with image-specific TTL."""
+        if not self.redis:
+            return False
+
+        try:
+            key = self._get_image_cache_key(image_cache.image_id)
+
+            import base64
+            data = {
+                "image_id": image_cache.image_id,
+                "file_data": base64.b64encode(image_cache.file_data).decode("utf-8"),
+                "mime_type": image_cache.mime_type,
+                "file_name": image_cache.file_name,
+                "file_size": image_cache.file_size,
+                "output_format": image_cache.output_format,
+                "last_updated": image_cache.last_updated.isoformat(),
+            }
+
+            ttl_value = self.ttl_days if ttl_days is None else ttl_days
+            ttl_seconds = ttl_value * 24 * 60 * 60
+            json_data = json.dumps(data)
+            await self.redis.setex(key, ttl_seconds, json_data.encode("utf-8"))
+            return True
+        except Exception as e:
+            logger.error(f"Error storing image {image_cache.image_id} in cache: {e}")
+            return False
     
     async def delete_sticker(self, file_id: str) -> bool:
         """Delete sticker from cache."""
@@ -189,6 +252,19 @@ class RedisService:
             return result > 0
         except Exception as e:
             logger.error(f"Error deleting sticker {file_id} from cache: {e}")
+            return False
+
+    async def delete_image(self, image_id: str) -> bool:
+        """Delete uploaded image from cache."""
+        if not self.redis:
+            return False
+
+        try:
+            key = self._get_image_cache_key(image_id)
+            result = await self.redis.delete(key)
+            return result > 0
+        except Exception as e:
+            logger.error(f"Error deleting image {image_id} from cache: {e}")
             return False
     
     async def get_cache_stats(self) -> Optional[CacheStats]:

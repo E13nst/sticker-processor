@@ -2,6 +2,7 @@
 from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List
 import re
+from app.config import settings
 
 
 class FileIdRequest(BaseModel):
@@ -160,9 +161,14 @@ class WaveSpeedGenerateRequest(BaseModel):
     seed: int = Field(default=-1, description="Generation seed (-1 for random)")
     num_images: int = Field(default=1, ge=1, le=1, description="Number of images to generate (currently only 1 is supported)")
     strength: float = Field(default=0.8, ge=0.0, le=1.0, description="Generation strength")
-    image: str = Field(default="", description="Deprecated: optional base64 input image for img2img (backward compatibility)")
-    source_image_base64: Optional[str] = Field(default=None, description="Optional base64 source image for img2img")
-    source_image_url: Optional[str] = Field(default=None, description="Optional source image URL for img2img")
+    source_image_ids: Optional[List[str]] = Field(
+        default=None,
+        description="Optional uploaded image IDs for img2img/edit flow (max 4 combined with source_image_urls)",
+    )
+    source_image_urls: Optional[List[str]] = Field(
+        default=None,
+        description="Optional source image URLs for img2img/edit flow (max 4 combined with source_image_ids)",
+    )
     remove_background: bool = Field(default=False, description="Remove background from generated image")
 
     @field_validator('prompt')
@@ -206,46 +212,50 @@ class WaveSpeedGenerateRequest(BaseModel):
 
         return v
 
-    @field_validator('source_image_url')
+    @field_validator('source_image_ids')
     @classmethod
-    def validate_source_image_url(cls, v):
-        """Validate source image URL format."""
+    def validate_source_image_ids(cls, v):
+        """Validate uploaded image IDs list."""
         if v is None:
             return v
-        url = v.strip()
-        if not url or url.lower() == "string":
-            return None
-        if not url.startswith(("http://", "https://")):
-            raise ValueError("source_image_url must start with http:// or https://")
-        return url
+        normalized = []
+        for raw_id in v:
+            value = (raw_id or "").strip()
+            if not value:
+                continue
+            normalized.append(value)
+        return normalized or None
 
-    @field_validator('source_image_base64')
+    @field_validator('source_image_urls')
     @classmethod
-    def validate_source_image_base64(cls, v):
-        """Validate source image base64 field."""
+    def validate_source_image_urls(cls, v):
+        """Validate source image URL list."""
         if v is None:
             return v
-        value = v.strip()
-        if not value or value.lower() == "string":
-            return None
-        return value
+        normalized = []
+        for raw_url in v:
+            value = (raw_url or "").strip()
+            if not value:
+                continue
+            if not value.startswith(("http://", "https://")):
+                raise ValueError("source_image_urls must contain only http:// or https:// URLs")
+            normalized.append(value)
+        return normalized or None
 
     @model_validator(mode='after')
     def validate_source_image_fields(self):
-        """Normalize source image fields and prevent conflicting inputs."""
-        image_value = (self.image or "").strip()
-        has_legacy_image = bool(image_value and image_value.lower() != "string")
-        has_base64 = bool(self.source_image_base64)
-        has_url = bool(self.source_image_url)
+        """Validate combined source image constraints."""
+        source_image_ids = self.source_image_ids or []
+        source_image_urls = self.source_image_urls or []
+        total_sources = len(source_image_ids) + len(source_image_urls)
 
-        if has_base64 and has_url:
-            raise ValueError("Use only one source image field: source_image_base64 or source_image_url")
+        if total_sources > settings.image_max_sources_per_request:
+            raise ValueError(
+                f"Total number of source images cannot exceed {settings.image_max_sources_per_request}"
+            )
 
-        # Backward compatibility: if old `image` provided, map it to source_image_base64.
-        if has_legacy_image and not has_base64 and not has_url:
-            self.source_image_base64 = image_value
-        elif has_legacy_image and (has_base64 or has_url):
-            raise ValueError("Field 'image' cannot be combined with source_image_base64/source_image_url")
+        if self.model != "nanabanana" and total_sources > 1:
+            raise ValueError("Only nanabanana supports multiple source images")
 
         return self
 

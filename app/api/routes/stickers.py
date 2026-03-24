@@ -242,7 +242,8 @@ def create_sticker_router(cache_manager: CacheManager) -> APIRouter:
         {
           "prompt": "Turn this into a clean telegram sticker style",
           "model": "nanabanana",
-          "source_image_url": "https://example.com/input.png",
+          "source_image_ids": ["img_1234567890abcdef123456"],
+          "source_image_urls": ["https://example.com/input.png"],
           "remove_background": true
         }
         ```

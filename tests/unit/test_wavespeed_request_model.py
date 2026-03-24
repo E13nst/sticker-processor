@@ -18,11 +18,11 @@ class TestWaveSpeedGenerateRequest:
         req = WaveSpeedGenerateRequest(prompt="test", model="flux-schnell")
         assert req.model == "flux-schnell"
 
-    def test_valid_model_nanabanana_with_source_image(self):
+    def test_valid_model_nanabanana_with_source_images(self):
         req = WaveSpeedGenerateRequest(
             prompt="test",
             model="nanabanana",
-            source_image_url="https://example.com/image.png",
+            source_image_urls=["https://example.com/image.png"],
         )
         assert req.model == "nanabanana"
     
@@ -42,36 +42,30 @@ class TestWaveSpeedGenerateRequest:
         with pytest.raises(ValueError):
             WaveSpeedGenerateRequest(prompt="test", size=size)
 
-    def test_source_image_legacy_field_is_supported(self):
-        req = WaveSpeedGenerateRequest(prompt="test", image="abc123")
-        assert req.source_image_base64 == "abc123"
-
-    def test_source_image_url_or_base64_exclusive(self):
-        with pytest.raises(ValueError, match="Use only one source image field"):
+    def test_reject_invalid_source_url(self):
+        with pytest.raises(ValueError, match="source_image_urls"):
             WaveSpeedGenerateRequest(
                 prompt="test",
-                source_image_base64="a",
-                source_image_url="https://example.com/image.png",
+                model="nanabanana",
+                source_image_urls=["ftp://example.com/image.png"],
             )
 
-    def test_legacy_image_conflicts_with_new_fields(self):
-        with pytest.raises(ValueError, match="cannot be combined"):
+    def test_reject_more_than_limit_sources(self):
+        with pytest.raises(ValueError, match="cannot exceed"):
             WaveSpeedGenerateRequest(
                 prompt="test",
-                image="legacy",
-                source_image_base64="new",
+                model="nanabanana",
+                source_image_ids=["img_1", "img_2", "img_3"],
+                source_image_urls=["https://1", "https://2"],
             )
 
-    def test_swagger_placeholder_strings_are_ignored(self):
-        req = WaveSpeedGenerateRequest(
-            prompt="fat gold cat with rick and morty style",
-            model="nanabanana",
-            image="string",
-            source_image_base64="string",
-            source_image_url="string",
-        )
-        assert req.source_image_base64 is None
-        assert req.source_image_url is None
+    def test_reject_multiple_sources_for_non_nanabanana(self):
+        with pytest.raises(ValueError, match="Only nanabanana supports multiple source images"):
+            WaveSpeedGenerateRequest(
+                prompt="test",
+                model="flux-schnell",
+                source_image_urls=["https://example.com/1.png", "https://example.com/2.png"],
+            )
 
 
 @pytest.mark.unit

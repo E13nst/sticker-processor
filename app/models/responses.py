@@ -19,6 +19,18 @@ class StickerCache(BaseModel):
     is_converted: bool = False
 
 
+class ImageCache(BaseModel):
+    """Model for cached uploaded image data."""
+
+    image_id: str
+    file_data: bytes
+    mime_type: str
+    file_name: str
+    file_size: int
+    output_format: str
+    last_updated: datetime
+
+
 class StickerResponse(BaseModel):
     """Response model for sticker endpoint."""
     
@@ -49,3 +61,13 @@ class ErrorResponse(BaseModel):
     message: str
     file_id: Optional[str] = None
     details: Optional[Dict[str, Any]] = None
+
+
+class ImageUploadItem(BaseModel):
+    """Response model for uploaded image metadata."""
+
+    image_id: str
+    mime_type: str
+    file_size: int
+    expires_at: datetime
+    deduplicated: bool = False

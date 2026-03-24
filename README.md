@@ -27,6 +27,8 @@ Python microservice for processing and caching Telegram stickers with format con
 ## API Endpoints
 
 - `GET /stickers/{file_id}` - Get sticker file
+- `POST /images/upload` - Upload source images for generation/edit
+- `GET /images/{image_id}` - Get uploaded source image by id
 - `POST /stickers/wavespeed/generate` - Submit async WaveSpeed sticker generation
 - `GET /stickers/wavespeed/{file_id}` - Download/poll generated WaveSpeed sticker
 - `POST /stickers/wavespeed/save-to-set` - Save generated WaveSpeed sticker to Telegram set
@@ -54,6 +56,9 @@ LOG_LEVEL=INFO
 MAX_FILE_SIZE_MB=20
 CONVERSION_TIMEOUT_SEC=30
 CACHE_TTL_DAYS=7
+IMAGE_CACHE_TTL_DAYS=1
+IMAGE_CACHE_DISK_ENABLED=false
+IMAGE_UPLOAD_MAX_FILES_PER_REQUEST=4
 ```
 
 ## Quick Start

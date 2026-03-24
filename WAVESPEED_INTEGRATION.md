@@ -7,6 +7,8 @@
 - `POST /stickers/wavespeed/generate` - отправка задачи генерации, получение синтетического `ws_...` file id
 - `GET /stickers/wavespeed/{file_id}` - получение готового стикера (`image/webp`) или текущего статуса задачи
 - `POST /stickers/wavespeed/save-to-set` - дождаться готовности `ws_...` и сохранить в Telegram sticker set
+- `POST /images/upload` - загрузка source-изображений (multipart/form-data) и получение `image_id`
+- `GET /images/{image_id}` - получить загруженное source-изображение по id
 
 Пример локового base URL: `http://127.0.0.1:8081`
 
@@ -34,16 +36,43 @@
 - `num_images: int` (сейчас должен быть `1`)
 - `strength: float` (по умолчанию: `0.8`)
 - `remove_background: bool` (по умолчанию: `false`)
-- `source_image_url: string` (опционально, для img2img/edit)
-- `source_image_base64: string` (опционально, для img2img/edit)
-- `image: string` (legacy-алиас; для новых интеграций не рекомендуется)
+- `source_image_ids: string[]` (опционально, загруженные через `/images/upload`)
+- `source_image_urls: string[]` (опционально, внешние URL источников)
+
+Ограничения:
+- суммарно `source_image_ids + source_image_urls <= 4`
+- для `flux-schnell` допускается не более одного source image
 
 ### Выбор режима Nano Banana
 
 Для `model="nanabanana"` режим выбирается автоматически:
 
-- если передан source image (`source_image_url` или `source_image_base64`) -> режим image edit
+- если передан хотя бы один source image (`source_image_ids`/`source_image_urls`) -> режим image edit
 - если source image не передан -> режим text-to-image
+
+## Загрузка source-изображений
+
+### `POST /images/upload`
+
+`multipart/form-data` c полем `files` (можно передать несколько файлов).
+
+Успех (`201`):
+
+```json
+{
+  "items": [
+    {
+      "image_id": "img_1e6a2979a4d45754c16f9e97",
+      "mime_type": "image/jpeg",
+      "file_size": 182340,
+      "expires_at": "2026-03-25T11:20:30.000000",
+      "deduplicated": false
+    }
+  ]
+}
+```
+
+`image_id` используется в `source_image_ids` при вызове генерации.
 
 ## Модель ответа: `POST /stickers/wavespeed/generate`
 
@@ -187,19 +216,39 @@ curl -X POST "http://127.0.0.1:8081/stickers/wavespeed/generate" \
   -d '{
     "prompt": "Turn this image into telegram sticker style",
     "model": "nanabanana",
-    "source_image_url": "https://example.com/input.png",
+    "source_image_urls": ["https://example.com/input.png"],
     "remove_background": true
   }'
 ```
 
-### 4) polling/скачивание готового стикера
+### 4) nanabanana image edit (source image_id)
+
+```bash
+# 1) upload local file
+curl -X POST "http://127.0.0.1:8081/images/upload" \
+  -H "accept: application/json" \
+  -F "files=@/tmp/input.png"
+
+# 2) use returned image_id
+curl -X POST "http://127.0.0.1:8081/stickers/wavespeed/generate" \
+  -H "accept: application/json" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Turn this image into telegram sticker style",
+    "model": "nanabanana",
+    "source_image_ids": ["img_xxx"],
+    "remove_background": true
+  }'
+```
+
+### 5) polling/скачивание готового стикера
 
 ```bash
 # Замените ws_xxx на file_id из ответа POST
 curl -v "http://127.0.0.1:8081/stickers/wavespeed/ws_xxx" --output sticker.webp
 ```
 
-### 5) сохранить готовый `ws_` стикер в Telegram set
+### 6) сохранить готовый `ws_` стикер в Telegram set
 
 ```bash
 curl -X POST "http://127.0.0.1:8081/stickers/wavespeed/save-to-set" \
@@ -225,4 +274,4 @@ curl -X POST "http://127.0.0.1:8081/stickers/wavespeed/save-to-set" \
 - `file_id` синтетический и namespaced (`ws_...`), это не Telegram `file_id`.
 - Финальный результат нормализуется в Telegram-compatible WebP (canvas 512x512 с сохранением пропорций).
 - Сгенерированные файлы кешируются; повторные `GET` для готовых задач быстрые.
-- В production-клиентах не отправляйте Swagger placeholder-строки вроде `"source_image_url": "string"`.
+- Uploaded source images хранятся только в Redis (TTL 1 день), без disk-cache.

@@ -87,6 +87,13 @@ class Settings(BaseSettings):
     redis_preferred_formats: list = ['lottie', 'webp', 'png', 'jpg']  # Preferred formats for Redis
     redis_excluded_formats: list = ['tgs']  # Formats excluded from Redis cache
     disk_max_file_size_mb: int = 50  # Maximum file size for disk cache (MB)
+
+    # Uploaded Images Configuration
+    image_cache_ttl_days: int = 1  # Redis TTL for uploaded image assets
+    image_cache_disk_enabled: bool = False  # Keep uploaded images in Redis only
+    image_upload_max_file_size_mb: int = 10  # Maximum upload size per image
+    image_upload_max_files_per_request: int = 4  # Maximum number of files in one upload call
+    image_max_sources_per_request: int = 4  # Maximum source images for WaveSpeed generation
     
     class Config:
         env_file = ".env"

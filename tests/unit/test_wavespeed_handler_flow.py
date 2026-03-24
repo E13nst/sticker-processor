@@ -53,7 +53,7 @@ async def test_generate_wavespeed_with_source_image_url(handler):
     request = WaveSpeedGenerateRequest(
         prompt="hi",
         model="flux-schnell",
-        source_image_url="https://example.com/image.png",
+        source_image_urls=["https://example.com/image.png"],
     )
     response = await handler.generate_wavespeed_sticker(request)
 
@@ -75,7 +75,7 @@ async def test_generate_nanabanana_with_source_image_url_no_download(handler):
     request = WaveSpeedGenerateRequest(
         prompt="hi",
         model="nanabanana",
-        source_image_url="https://example.com/image.png",
+        source_image_urls=["https://example.com/image.png"],
     )
     response = await handler.generate_wavespeed_sticker(request)
 
@@ -104,7 +104,31 @@ async def test_generate_nanabanana_text_to_image_no_source(handler):
     assert response.status_code == 202
     handler._wavespeed_service.submit.assert_awaited_once()
     kwargs = handler._wavespeed_service.submit.await_args.kwargs
-    assert kwargs["image"] == ""
+    assert kwargs["images"] == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_generate_nanabanana_with_source_image_ids(handler):
+    handler._wavespeed_service = Mock()
+    handler._wavespeed_service.submit = AsyncMock(return_value="provider-id-5")
+    handler._wavespeed_service.client = Mock()
+    handler._wavespeed_service.client.download_image = AsyncMock(return_value=b"raw-image-bytes")
+    handler._wavespeed_registry = Mock()
+    handler._wavespeed_registry.create_job = AsyncMock()
+    handler.cache_manager.get_uploaded_image = AsyncMock(return_value=(b"stored", "image/jpeg"))
+
+    request = WaveSpeedGenerateRequest(
+        prompt="hi",
+        model="nanabanana",
+        source_image_ids=["img_abc123"],
+    )
+    response = await handler.generate_wavespeed_sticker(request)
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 202
+    kwargs = handler._wavespeed_service.submit.await_args.kwargs
+    assert len(kwargs["images"]) == 1
 
 
 @pytest.mark.unit

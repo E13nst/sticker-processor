@@ -14,7 +14,17 @@ class WaveSpeedGenerationService:
             raise ValueError("WAVESPEED_API_KEY is not configured.")
         self.client = WaveSpeedClient(settings.wavespeed_api_key)
 
-    async def submit(self, *, model: str, prompt: str, size: str, seed: int, num_images: int, strength: float, image: str) -> str:
+    async def submit(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        size: str,
+        seed: int,
+        num_images: int,
+        strength: float,
+        images: list[str],
+    ) -> str:
         return await self.client.submit_generation(
             model=model,
             final_prompt=prompt,
@@ -22,7 +32,7 @@ class WaveSpeedGenerationService:
             seed=seed,
             num_images=num_images,
             strength=strength,
-            image=image,
+            images=images,
             output_format="png",
         )
 

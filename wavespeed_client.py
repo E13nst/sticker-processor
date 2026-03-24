@@ -155,11 +155,12 @@ class WaveSpeedClient:
         seed: int = -1,
         num_images: int = 1,
         strength: float = 0.8,
-        image: str = "",
+        images: Optional[list[str]] = None,
     ) -> str:
         """
         Унифицированная отправка задачи генерации для разных моделей WaveSpeed.
         """
+        resolved_images = images or []
         if model != "nanabanana" and model not in MODEL_ENDPOINTS:
             raise ValueError(f"Unsupported WaveSpeed model: {model}")
 
@@ -167,12 +168,12 @@ class WaveSpeedClient:
             # Nano Banana supports two APIs:
             # 1) Edit (image-to-image) when source image is provided
             # 2) Text-to-image when source image is omitted
-            if image:
+            if resolved_images:
                 endpoint = MODEL_ENDPOINTS["nanabanana_edit"]
                 payload = {
                     "enable_base64_output": False,
                     "enable_sync_mode": False,
-                    "images": [image],
+                    "images": resolved_images,
                     "output_format": output_format,
                     "prompt": final_prompt,
                 }
@@ -186,10 +187,11 @@ class WaveSpeedClient:
                 }
         else:
             endpoint = MODEL_ENDPOINTS[model]
+            input_image = resolved_images[0] if resolved_images else ""
             payload = {
                 "enable_base64_output": False,
                 "enable_sync_mode": False,
-                "image": image,
+                "image": input_image,
                 "num_images": num_images,
                 "output_format": output_format,
                 "prompt": final_prompt,

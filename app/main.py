@@ -10,7 +10,7 @@ from app.config import settings
 from app.services.cache_manager import CacheManager
 from app.services.webhook_db import WebhookDBService
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.api.routes import health, stickers, cache, stats, snapstix
+from app.api.routes import health, stickers, cache, stats, snapstix, images
 
 # Configure logging
 logging.basicConfig(
@@ -162,6 +162,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 # Register routes
 app.include_router(health.router)
 app.include_router(stickers.create_sticker_router(cache_manager))
+app.include_router(images.create_images_router(cache_manager))
 app.include_router(cache.create_cache_router(cache_manager))
 app.include_router(stats.create_stats_router(cache_manager))
 app.include_router(snapstix.create_snapstix_router(webhook_db))

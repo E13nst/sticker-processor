@@ -623,7 +623,7 @@ class StickerHandler:
         try:
             wavespeed_service = self.wavespeed_service
             registry = self.wavespeed_registry
-            source_image_input = await self._resolve_source_image_input(request)
+            source_images = await self._resolve_source_images(request)
 
             provider_request_id = await wavespeed_service.submit(
                 model=request.model,
@@ -632,7 +632,7 @@ class StickerHandler:
                 seed=request.seed,
                 num_images=request.num_images,
                 strength=request.strength,
-                image=source_image_input,
+                images=source_images,
             )
 
             file_id = self._build_wavespeed_file_id(provider_request_id, request)
@@ -663,22 +663,29 @@ class StickerHandler:
             logger.error(f"Error submitting WaveSpeed generation: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to submit WaveSpeed generation: {str(e)}")
 
-    async def _resolve_source_image_input(self, request: WaveSpeedGenerateRequest) -> str:
-        """Resolve source image into URL/base64 payload for WaveSpeed."""
-        if request.source_image_base64:
-            return request.source_image_base64
+    async def _resolve_source_images(self, request: WaveSpeedGenerateRequest) -> List[str]:
+        """Resolve source images from uploaded IDs and source URLs."""
+        source_images: List[str] = []
 
-        if request.source_image_url:
+        for image_id in request.source_image_ids or []:
+            cached = await self.cache_manager.get_uploaded_image(image_id)
+            if not cached:
+                raise HTTPException(status_code=404, detail=f"Uploaded image not found: {image_id}")
+            image_bytes, _ = cached
+            source_images.append(base64.b64encode(image_bytes).decode("utf-8"))
+
+        for source_url in request.source_image_urls or []:
             # Nano Banana edit model accepts source image URL directly.
             if request.model == "nanabanana":
-                return request.source_image_url
+                source_images.append(source_url)
+                continue
 
-            image_bytes = await self.wavespeed_service.client.download_image(request.source_image_url)
+            image_bytes = await self.wavespeed_service.client.download_image(source_url)
             if not image_bytes:
-                raise HTTPException(status_code=400, detail="Failed to download source_image_url")
-            return base64.b64encode(image_bytes).decode("utf-8")
+                raise HTTPException(status_code=400, detail=f"Failed to download source URL: {source_url}")
+            source_images.append(base64.b64encode(image_bytes).decode("utf-8"))
 
-        return ""
+        return source_images
 
     async def get_wavespeed_sticker(self, file_id: str):
         """Download generated sticker by ws_ file_id."""
