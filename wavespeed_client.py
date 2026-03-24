@@ -11,6 +11,7 @@ WAVESPEED_BASE_URL = "https://api.wavespeed.ai/api/v3"
 SUBMIT_TIMEOUT = httpx.Timeout(connect=5.0, read=20.0, write=5.0, pool=5.0)
 GET_RESULT_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
 MAX_RETRIES = 2
+NANABANANA_DEFAULT_ASPECT_RATIO = "1:1"
 MODEL_ENDPOINTS = {
     "flux-schnell": "wavespeed-ai/flux-schnell",
     "nanabanana_edit": "google/nano-banana-pro/edit",
@@ -171,6 +172,7 @@ class WaveSpeedClient:
             if resolved_images:
                 endpoint = MODEL_ENDPOINTS["nanabanana_edit"]
                 payload = {
+                    "aspect_ratio": NANABANANA_DEFAULT_ASPECT_RATIO,
                     "enable_base64_output": False,
                     "enable_sync_mode": False,
                     "images": resolved_images,
@@ -180,6 +182,7 @@ class WaveSpeedClient:
             else:
                 endpoint = MODEL_ENDPOINTS["nanabanana_t2i"]
                 payload = {
+                    "aspect_ratio": NANABANANA_DEFAULT_ASPECT_RATIO,
                     "enable_base64_output": False,
                     "enable_sync_mode": False,
                     "output_format": output_format,

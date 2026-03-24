@@ -49,6 +49,7 @@
 
 - если передан хотя бы один source image (`source_image_ids`/`source_image_urls`) -> режим image edit
 - если source image не передан -> режим text-to-image
+- при отправке в WaveSpeed всегда используется `"aspect_ratio": "1:1"` (для совместимости со стикерным квадратным форматом)
 
 ## Загрузка source-изображений
 
