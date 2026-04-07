@@ -44,7 +44,11 @@ class ImageHandler:
                 )
 
             try:
-                normalized_bytes, mime_type, output_format = self.transformer.normalize_for_nanabanana(raw_bytes)
+                normalized_bytes, mime_type, output_format = self.transformer.normalize_for_nanabanana(
+                    raw_bytes,
+                    filename=file.filename,
+                    content_type=file.content_type,
+                )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=f"Invalid image '{file.filename}': {exc}") from exc
 

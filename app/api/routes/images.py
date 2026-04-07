@@ -18,7 +18,10 @@ def create_images_router(cache_manager: CacheManager) -> APIRouter:
         summary="Upload Source Images",
         description=(
             "Upload one or many source images via multipart/form-data and store normalized versions in Redis. "
-            "Returns deterministic image IDs that can be used in WaveSpeed generation requests."
+            "Returns deterministic image IDs that can be used in WaveSpeed generation requests. "
+            "Supported formats: JPEG/JPG, PNG, WEBP, GIF, BMP, TIFF, HEIC/HEIF, AVIF. "
+            "All uploaded images are normalized and converted to PNG (for alpha images) or JPEG (for non-alpha images). "
+            "HEIC/HEIF and AVIF decoding requires server-side HEIF support (pillow-heif/libheif)."
         ),
         tags=["Images"],
         status_code=201,
