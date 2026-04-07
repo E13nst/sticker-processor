@@ -105,6 +105,20 @@ class TelegramRequestQueue:
                 # No running event loop
                 logger.warning("Cannot start processor: no running event loop")
                 return
+
+    def _safe_set_result(self, future: asyncio.Future, value: Any) -> bool:
+        """Safely set a future result and avoid InvalidStateError on cancelled/done futures."""
+        if future.done() or future.cancelled():
+            return False
+        future.set_result(value)
+        return True
+
+    def _safe_set_exception(self, future: asyncio.Future, error: Exception) -> bool:
+        """Safely set a future exception and avoid InvalidStateError on cancelled/done futures."""
+        if future.done() or future.cancelled():
+            return False
+        future.set_exception(error)
+        return True
     
     async def _process_queue(self):
         """Process queued requests one by one with rate limiting."""
@@ -120,6 +134,11 @@ class TelegramRequestQueue:
                     break
                 
                 func, args, kwargs, future, enqueued_at, return_metrics = request_data
+
+                # Request may be cancelled (e.g., endpoint timeout) while waiting in queue.
+                # Skip execution to avoid doing work for abandoned requests.
+                if future.done() or future.cancelled():
+                    continue
                 
                 # Wait for rate limit to expire if active
                 if self.rate_limit_active:
@@ -147,7 +166,7 @@ class TelegramRequestQueue:
                         result = await func(*args, **kwargs)
                         execution_ms = int((time.time() - execution_start) * 1000)
                         if return_metrics:
-                            future.set_result((
+                            self._safe_set_result(future, (
                                 result,
                                 {
                                     "queue_wait_ms": queue_wait_ms,
@@ -155,7 +174,7 @@ class TelegramRequestQueue:
                                 }
                             ))
                         else:
-                            future.set_result(result)
+                            self._safe_set_result(future, result)
                         
                         # On success, gradually reduce delay if adaptive
                         await self._on_success()
@@ -170,7 +189,7 @@ class TelegramRequestQueue:
                                     "execution_ms": execution_ms,
                                 }
                             )
-                        future.set_exception(e)
+                        self._safe_set_exception(future, e)
                         # Check if this is a 429 error
                         if hasattr(e, 'status') and e.status == 429:
                             await self._handle_rate_limit()
@@ -180,7 +199,7 @@ class TelegramRequestQueue:
             except Exception as e:
                 logger.error(f"Error in queue processor: {e}", exc_info=True)
                 if 'future' in locals() and not future.done():
-                    future.set_exception(e)
+                    self._safe_set_exception(future, e)
     
     async def _on_success(self):
         """Handle successful request - gradually reduce delay if adaptive."""
@@ -257,15 +276,21 @@ class TelegramRequestQueue:
                     return result, {"queue_wait_ms": 0, "execution_ms": 0}
                 return result
         
-        # Create future for result
-        future = asyncio.Future()
+        # Create future for result bound to current loop
+        future = asyncio.get_running_loop().create_future()
         enqueued_at = time.time()
         
         # Add request to queue
         await self.queue.put((func, args, kwargs, future, enqueued_at, return_metrics))
         
-        # Wait for result
-        return await future
+        # Wait for result. If caller is cancelled (e.g. timeout), cancel the future so
+        # queue processor knows result delivery is no longer needed.
+        try:
+            return await future
+        except asyncio.CancelledError:
+            if not future.done():
+                future.cancel()
+            raise
 
     async def execute(self, func: Callable, *args, **kwargs) -> Any:
         """Execute function through queue with rate limiting.
