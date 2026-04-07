@@ -119,7 +119,7 @@ class TelegramRequestQueue:
                 if request_data is None:  # Shutdown signal
                     break
                 
-                func, args, kwargs, future = request_data
+                func, args, kwargs, future, enqueued_at, return_metrics = request_data
                 
                 # Wait for rate limit to expire if active
                 if self.rate_limit_active:
@@ -139,15 +139,37 @@ class TelegramRequestQueue:
                 async with self.semaphore:
                     self.last_request_time = time.time()
                     self.request_times.append(time.time())
+                    execution_start = time.time()
+                    queue_wait_ms = int((execution_start - enqueued_at) * 1000)
                     
                     try:
                         # Execute the function
                         result = await func(*args, **kwargs)
-                        future.set_result(result)
+                        execution_ms = int((time.time() - execution_start) * 1000)
+                        if return_metrics:
+                            future.set_result((
+                                result,
+                                {
+                                    "queue_wait_ms": queue_wait_ms,
+                                    "execution_ms": execution_ms,
+                                }
+                            ))
+                        else:
+                            future.set_result(result)
                         
                         # On success, gradually reduce delay if adaptive
                         await self._on_success()
                     except Exception as e:
+                        if return_metrics:
+                            execution_ms = int((time.time() - execution_start) * 1000)
+                            setattr(
+                                e,
+                                "queue_metrics",
+                                {
+                                    "queue_wait_ms": queue_wait_ms,
+                                    "execution_ms": execution_ms,
+                                }
+                            )
                         future.set_exception(e)
                         # Check if this is a 429 error
                         if hasattr(e, 'status') and e.status == 429:
@@ -195,6 +217,56 @@ class TelegramRequestQueue:
                 f"rate_limit_duration={rate_limit_duration}s"
             )
     
+    async def _execute_internal(
+        self,
+        func: Callable,
+        *args,
+        return_metrics: bool = False,
+        **kwargs,
+    ) -> Any:
+        """Execute function through queue with optional queue metrics."""
+        # Check if event loop is still running
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_closed():
+                # Event loop is closed, execute directly without queue
+                logger.warning("Event loop closed, executing function directly without queue")
+                result = await func(*args, **kwargs)
+                if return_metrics:
+                    return result, {"queue_wait_ms": 0, "execution_ms": 0}
+                return result
+        except RuntimeError as e:
+            if "Event loop is closed" in str(e) or "no running event loop" in str(e):
+                # Event loop is closed, execute directly without queue
+                logger.warning("Event loop closed, executing function directly without queue")
+                result = await func(*args, **kwargs)
+                if return_metrics:
+                    return result, {"queue_wait_ms": 0, "execution_ms": 0}
+                return result
+            raise
+        
+        # Start processor if not running
+        if not self._running:
+            self._start_processor()
+            # If processor didn't start, execute directly
+            if not self._running:
+                # Fallback: execute directly without queue
+                logger.warning("Processor not started, executing function directly without queue")
+                result = await func(*args, **kwargs)
+                if return_metrics:
+                    return result, {"queue_wait_ms": 0, "execution_ms": 0}
+                return result
+        
+        # Create future for result
+        future = asyncio.Future()
+        enqueued_at = time.time()
+        
+        # Add request to queue
+        await self.queue.put((func, args, kwargs, future, enqueued_at, return_metrics))
+        
+        # Wait for result
+        return await future
+
     async def execute(self, func: Callable, *args, **kwargs) -> Any:
         """Execute function through queue with rate limiting.
         
@@ -209,37 +281,16 @@ class TelegramRequestQueue:
         Returns:
             Result of function execution
         """
-        # Check if event loop is still running
-        try:
-            loop = asyncio.get_running_loop()
-            if loop.is_closed():
-                # Event loop is closed, execute directly without queue
-                logger.warning("Event loop closed, executing function directly without queue")
-                return await func(*args, **kwargs)
-        except RuntimeError as e:
-            if "Event loop is closed" in str(e) or "no running event loop" in str(e):
-                # Event loop is closed, execute directly without queue
-                logger.warning("Event loop closed, executing function directly without queue")
-                return await func(*args, **kwargs)
-            raise
-        
-        # Start processor if not running
-        if not self._running:
-            self._start_processor()
-            # If processor didn't start, execute directly
-            if not self._running:
-                # Fallback: execute directly without queue
-                logger.warning("Processor not started, executing function directly without queue")
-                return await func(*args, **kwargs)
-        
-        # Create future for result
-        future = asyncio.Future()
-        
-        # Add request to queue
-        await self.queue.put((func, args, kwargs, future))
-        
-        # Wait for result
-        return await future
+        return await self._execute_internal(func, *args, return_metrics=False, **kwargs)
+
+    async def execute_with_metrics(self, func: Callable, *args, **kwargs) -> Any:
+        """
+        Execute function through queue and return queue timing metrics.
+
+        Returns:
+            Tuple(result, {"queue_wait_ms": int, "execution_ms": int})
+        """
+        return await self._execute_internal(func, *args, return_metrics=True, **kwargs)
     
     async def shutdown(self):
         """Shutdown queue processor gracefully."""

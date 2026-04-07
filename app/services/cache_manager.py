@@ -95,19 +95,27 @@ class CacheManager:
             f"file_id={file_id}, cache_check_time={cache_check_time}ms"
         )
         telegram_start = time.time()
-        result = await self._fetch_from_telegram(file_id)
+        result, telegram_breakdown = await self._fetch_from_telegram(file_id)
         telegram_time = int((time.time() - telegram_start) * 1000)
         total_time = int((time.time() - request_start) * 1000)
         
         if telegram_time > 10000:  # Log very slow Telegram API calls (>10s)
             logger.warning(
                 f"Slow Telegram API fetch for {file_id}: telegram_time={telegram_time}ms, "
-                f"total_time={total_time}ms"
+                f"total_time={total_time}ms, "
+                f"get_file_total={telegram_breakdown.get('get_file_total_ms', 0)}ms, "
+                f"get_file_queue={telegram_breakdown.get('get_file_queue_wait_ms', 0)}ms, "
+                f"get_file_retries={telegram_breakdown.get('get_file_retries', 0)}, "
+                f"download_total={telegram_breakdown.get('download_total_ms', 0)}ms, "
+                f"download_queue={telegram_breakdown.get('download_queue_wait_ms', 0)}ms, "
+                f"download_retries={telegram_breakdown.get('download_retries', 0)}"
             )
         else:
             logger.info(
                 f"Telegram API fetch completed for {file_id}: telegram_time={telegram_time}ms, "
-                f"total_time={total_time}ms"
+                f"total_time={total_time}ms, "
+                f"get_file_total={telegram_breakdown.get('get_file_total_ms', 0)}ms, "
+                f"download_total={telegram_breakdown.get('download_total_ms', 0)}ms"
             )
         
         return result
@@ -299,14 +307,27 @@ class CacheManager:
         
         return result
     
-    async def _fetch_from_telegram(self, file_id: str) -> Optional[Tuple[bytes, str, bool]]:
+    async def _fetch_from_telegram(self, file_id: str) -> Tuple[Optional[Tuple[bytes, str, bool]], Dict[str, int]]:
         """Fetch sticker from Telegram API and cache it."""
+        get_file_metrics: Dict[str, int] = {}
+        download_metrics: Dict[str, int] = {}
+        breakdown: Dict[str, int] = {
+            "get_file_total_ms": 0,
+            "get_file_queue_wait_ms": 0,
+            "get_file_retries": 0,
+            "download_total_ms": 0,
+            "download_queue_wait_ms": 0,
+            "download_retries": 0,
+        }
         try:
             self.stats['telegram_api_calls'] += 1
             
             # Get file info from Telegram
             try:
-                file_info = await self.telegram_service.get_file_info(file_id)
+                file_info, get_file_metrics = await self.telegram_service.get_file_info_with_metrics(file_id)
+                breakdown["get_file_total_ms"] = get_file_metrics.get("total_ms", 0)
+                breakdown["get_file_queue_wait_ms"] = get_file_metrics.get("queue_wait_ms", 0)
+                breakdown["get_file_retries"] = get_file_metrics.get("retries_used", 0)
             except TelegramAPIError as te:
                 # Log client errors (4xx) as warnings, server errors (5xx) as errors
                 if 400 <= te.status < 500:
@@ -317,18 +338,21 @@ class CacheManager:
                 raise te
             if not file_info:
                 logger.error(f"Could not get file info for {file_id}")
-                return None
+                return None, breakdown
             
             file_path = file_info.get('file_path')
             if not file_path:
                 logger.error(f"No file path in response for {file_id}")
-                return None
+                return None, breakdown
             
             # Download file content
-            content = await self.telegram_service.download_file(file_path)
+            content, download_metrics = await self.telegram_service.download_file_with_metrics(file_path)
+            breakdown["download_total_ms"] = download_metrics.get("total_ms", 0)
+            breakdown["download_queue_wait_ms"] = download_metrics.get("queue_wait_ms", 0)
+            breakdown["download_retries"] = download_metrics.get("retries_used", 0)
             if not content:
                 logger.error(f"Could not download file for {file_id}")
-                return None
+                return None, breakdown
             
             # Detect file format
             file_format = self.telegram_service.detect_file_format(file_path, content)
@@ -373,14 +397,29 @@ class CacheManager:
             if file_format == 'tgs':
                 converted_content = await self._convert_and_cache(file_id, content)
                 if converted_content:
-                    return converted_content, 'application/json', True
+                    return (converted_content, 'application/json', True), breakdown
             
             # Return non-TGS files as-is
-            return content, mime_type, False
+            return (content, mime_type, False), breakdown
             
         except Exception as e:
+            if getattr(e, "telegram_metrics", None):
+                logger.error(
+                    "Telegram request failed with metrics for %s: metrics=%s, error=%s",
+                    file_id,
+                    getattr(e, "telegram_metrics"),
+                    str(e),
+                )
+            elif get_file_metrics or download_metrics:
+                logger.error(
+                    "Telegram request failed with partial metrics for %s: get_file=%s, download=%s, error=%s",
+                    file_id,
+                    get_file_metrics,
+                    download_metrics,
+                    str(e),
+                )
             logger.error(f"Error fetching from Telegram for {file_id}: {e}")
-            return None
+            return None, breakdown
     
     async def _convert_and_cache(self, file_id: str, content: bytes) -> Optional[bytes]:
         """Convert TGS to Lottie and cache the result."""

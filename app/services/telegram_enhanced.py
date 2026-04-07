@@ -198,9 +198,11 @@ class TelegramServiceEnhanced:
         jitter = random.uniform(0.1, 0.3) * delay
         return delay + jitter
     
-    async def _retry_with_backoff(self, func, *args, **kwargs):
+    async def _retry_with_backoff(self, func, *args, return_metrics: bool = False, **kwargs):
         """Execute function with exponential backoff retry logic."""
         last_exception = None
+        retries_used = 0
+        rate_limit_hits = 0
         
         for attempt in range(self.max_retries + 1):
             # Check if we're rate limited
@@ -218,6 +220,11 @@ class TelegramServiceEnhanced:
                     self.rate_limit_detected = False
                     self.rate_limit_reset_time = 0
                 
+                if return_metrics:
+                    return result, {
+                        "retries_used": retries_used,
+                        "rate_limit_hits": rate_limit_hits,
+                    }
                 return result
                 
             except Exception as e:
@@ -230,6 +237,7 @@ class TelegramServiceEnhanced:
 
                 # Check if this is a rate limit error
                 if hasattr(e, 'status') and e.status == 429:
+                    rate_limit_hits += 1
                     # Extract retry-after header if available
                     retry_after = None
                     if hasattr(e, 'headers') and 'retry-after' in e.headers:
@@ -241,6 +249,7 @@ class TelegramServiceEnhanced:
                     self._handle_rate_limit(retry_after)
                     
                     if attempt < self.max_retries:
+                        retries_used += 1
                         delay = self._calculate_retry_delay(attempt)
                         api_logger.info(f"Rate limit hit. Retrying in {delay:.1f}s (attempt {attempt + 1}/{self.max_retries})")
                         await asyncio.sleep(delay)
@@ -248,6 +257,7 @@ class TelegramServiceEnhanced:
                 
                 # For non-rate-limit errors, use standard exponential backoff
                 if attempt < self.max_retries:
+                    retries_used += 1
                     delay = self._calculate_retry_delay(attempt)
                     api_logger.warning(f"Request failed. Retrying in {delay:.1f}s (attempt {attempt + 1}/{self.max_retries}): {str(e)}")
                     await asyncio.sleep(delay)
@@ -258,15 +268,63 @@ class TelegramServiceEnhanced:
         
         # All retries failed
         if last_exception:
+            if return_metrics:
+                setattr(
+                    last_exception,
+                    "retry_metrics",
+                    {
+                        "retries_used": retries_used,
+                        "rate_limit_hits": rate_limit_hits,
+                    }
+                )
             raise last_exception
+        if return_metrics:
+            return None, {
+                "retries_used": retries_used,
+                "rate_limit_hits": rate_limit_hits,
+            }
         return None
     
     async def get_file_info(self, file_id: str) -> Optional[dict]:
         """Get file information from Telegram Bot API with retry logic and queue."""
+        result, _ = await self.get_file_info_with_metrics(file_id)
+        return result
+
+    async def get_file_info_with_metrics(self, file_id: str) -> Tuple[Optional[dict], Dict[str, int]]:
+        """Get file information and return timing breakdown."""
         async def _get_with_retry(file_id):
-            return await self._retry_with_backoff(self._get_file_info_internal, file_id)
-        
-        return await self.request_queue.execute(_get_with_retry, file_id)
+            return await self._retry_with_backoff(
+                self._get_file_info_internal,
+                file_id,
+                return_metrics=True
+            )
+
+        started_at = time.time()
+        try:
+            queued_result, queue_metrics = await self.request_queue.execute_with_metrics(_get_with_retry, file_id)
+            result, retry_metrics = queued_result
+            total_ms = int((time.time() - started_at) * 1000)
+            metrics = {
+                "total_ms": total_ms,
+                "queue_wait_ms": queue_metrics.get("queue_wait_ms", 0),
+                "queue_execution_ms": queue_metrics.get("execution_ms", 0),
+                "retries_used": retry_metrics.get("retries_used", 0),
+                "rate_limit_hits": retry_metrics.get("rate_limit_hits", 0),
+            }
+            return result, metrics
+        except Exception as e:
+            total_ms = int((time.time() - started_at) * 1000)
+            queue_metrics = getattr(e, "queue_metrics", {}) or {}
+            retry_metrics = getattr(e, "retry_metrics", {}) or {}
+            metrics = {
+                "total_ms": total_ms,
+                "queue_wait_ms": queue_metrics.get("queue_wait_ms", 0),
+                "queue_execution_ms": queue_metrics.get("execution_ms", 0),
+                "retries_used": retry_metrics.get("retries_used", 0),
+                "rate_limit_hits": retry_metrics.get("rate_limit_hits", 0),
+            }
+            setattr(e, "telegram_metrics", metrics)
+            raise
     
     async def _get_file_info_internal(self, file_id: str) -> Optional[dict]:
         """Internal method to get file information from Telegram Bot API."""
@@ -420,10 +478,44 @@ class TelegramServiceEnhanced:
     
     async def download_file(self, file_path: str) -> Optional[bytes]:
         """Download file content from Telegram with retry logic and queue."""
+        result, _ = await self.download_file_with_metrics(file_path)
+        return result
+
+    async def download_file_with_metrics(self, file_path: str) -> Tuple[Optional[bytes], Dict[str, int]]:
+        """Download file content and return timing breakdown."""
         async def _download_with_retry(file_path):
-            return await self._retry_with_backoff(self._download_file_internal, file_path)
-        
-        return await self.request_queue.execute(_download_with_retry, file_path)
+            return await self._retry_with_backoff(
+                self._download_file_internal,
+                file_path,
+                return_metrics=True
+            )
+
+        started_at = time.time()
+        try:
+            queued_result, queue_metrics = await self.request_queue.execute_with_metrics(_download_with_retry, file_path)
+            result, retry_metrics = queued_result
+            total_ms = int((time.time() - started_at) * 1000)
+            metrics = {
+                "total_ms": total_ms,
+                "queue_wait_ms": queue_metrics.get("queue_wait_ms", 0),
+                "queue_execution_ms": queue_metrics.get("execution_ms", 0),
+                "retries_used": retry_metrics.get("retries_used", 0),
+                "rate_limit_hits": retry_metrics.get("rate_limit_hits", 0),
+            }
+            return result, metrics
+        except Exception as e:
+            total_ms = int((time.time() - started_at) * 1000)
+            queue_metrics = getattr(e, "queue_metrics", {}) or {}
+            retry_metrics = getattr(e, "retry_metrics", {}) or {}
+            metrics = {
+                "total_ms": total_ms,
+                "queue_wait_ms": queue_metrics.get("queue_wait_ms", 0),
+                "queue_execution_ms": queue_metrics.get("execution_ms", 0),
+                "retries_used": retry_metrics.get("retries_used", 0),
+                "rate_limit_hits": retry_metrics.get("rate_limit_hits", 0),
+            }
+            setattr(e, "telegram_metrics", metrics)
+            raise
     
     async def _download_file_internal(self, file_path: str) -> Optional[bytes]:
         """Internal method to download file content from Telegram."""
